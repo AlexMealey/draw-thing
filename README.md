@@ -3,14 +3,16 @@
 A pen-first drawing PWA for iPad + Apple Pencil and Windows tablets + Surface/MPP pens.
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the architecture and phased plan.
 
-**Status:** Phase 4. In so far:
+**Status:** Phase 5. In so far:
 
 - the WebGL2 engine, pen input and gestures
 - the brush engine (Ink, Pencil, Airbrush, Marker, Chalk, plus an eraser)
-- layers: 9 blend modes, alpha lock, merge down, flatten and a layer budget
-- undo/redo for every stroke and layer change: 2-finger tap, 3-finger tap, `Ctrl+Z` and `Ctrl+Shift+Z`
+- layers with blend modes, and undo/redo
+- the full interface: top bar, sidebar, brush library and settings with pressure curves, colour
+  picker, layers panel with thumbnails and drag-to-reorder, eyedropper, gallery with canvas sizes,
+  and keyboard shortcuts
 
-Saving comes next.
+Saving and export come next (Phase 6).
 
 ## Requirements
 
@@ -164,8 +166,8 @@ Add query flags once. They're remembered per device, so the installed app keeps 
 
 ```
 src/
-  app/        React shell (canvas host, temporary dev toolbar and layers panel, update prompt)
-  state/      Zustand document store (layer stack metadata)
+  app/        React UI: editor/ (top bar, sidebar, panels), gallery/, ui/ (panel, sliders, icons)
+  state/      Zustand stores: document (layers), tools (persisted per device), history, thumbnails
   engine/     WebGL2 engine: input, gestures, view transform, brush, rendering
   debug/      flags, HUD, remote logging client
   platform/   OS / install-mode detection

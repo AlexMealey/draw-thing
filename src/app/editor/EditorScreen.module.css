@@ -1,0 +1,26 @@
+.editor {
+  position: fixed;
+  inset: 0;
+}
+
+.canvasHost {
+  position: absolute;
+  inset: 0;
+  touch-action: none; /* no pan, zoom or pen flicks over the drawing surface */
+  contain: strict;
+}
+
+.loupe {
+  position: fixed;
+  width: 72px;
+  height: 72px;
+  margin: -110px 0 0 -36px; /* above the finger or pen tip */
+  border: 10px solid var(--loupe, transparent);
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 2px #fff,
+    0 0 0 3px rgb(0 0 0 / 0.4),
+    0 8px 20px rgb(0 0 0 / 0.4);
+  pointer-events: none;
+  z-index: 30;
+}

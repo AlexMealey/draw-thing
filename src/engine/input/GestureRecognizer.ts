@@ -11,12 +11,25 @@ export interface GestureCallbacks {
   tap(fingers: number): void;
   /** Fast pinch-in: fit the canvas to the screen. */
   quickPinch(): void;
+  /** Touch-and-hold with one finger (eyedropper), then its moves and its release. */
+  hold?(p: Point): void;
+  holdMove?(p: Point): void;
+  holdEnd?(cancelled: boolean): void;
 }
+
+/** Schedules `fn` after `ms`; returns a cancel function. Injectable for tests. */
+export type Schedule = (fn: () => void, ms: number) => () => void;
+
+const defaultSchedule: Schedule = (fn, ms) => {
+  const id = setTimeout(fn, ms);
+  return () => clearTimeout(id);
+};
 
 const TAP_MAX_MS = 300;
 const TAP_SLOP_PX = 10;
 const QUICK_PINCH_MS = 300;
 const QUICK_PINCH_SCALE = 0.75;
+const HOLD_MS = 450;
 
 interface Session {
   start: number;
@@ -41,8 +54,14 @@ interface Pair {
 export class GestureRecognizer implements GestureSink {
   private session: Session | null = null;
   private pair: Pair | null = null;
+  private latest: ReadonlyMap<number, Point> = new Map();
+  private cancelHold: (() => void) | null = null;
+  private holding: number | null = null;
 
-  constructor(private cb: GestureCallbacks) {}
+  constructor(
+    private cb: GestureCallbacks,
+    private schedule: Schedule = defaultSchedule,
+  ) {}
 
   update(touches: ReadonlyMap<number, Point>, t: number) {
     const s = (this.session ??= { start: t, maxFingers: 0, moved: false, origins: new Map() });
@@ -51,6 +70,22 @@ export class GestureRecognizer implements GestureSink {
       const o = s.origins.get(id);
       if (!o) s.origins.set(id, { ...p });
       else if (Math.hypot(p.x - o.x, p.y - o.y) > TAP_SLOP_PX) s.moved = true;
+    }
+    this.latest = touches;
+
+    if (this.holding !== null) {
+      const p = touches.get(this.holding);
+      if (p) this.cb.holdMove?.(p);
+      return;
+    }
+    if (touches.size === 1 && s.maxFingers === 1 && !s.moved) {
+      const [first] = touches;
+      if (first && !this.cancelHold) {
+        const id = first[0];
+        this.cancelHold = this.schedule(() => this.startHold(id), HOLD_MS);
+      }
+    } else {
+      this.stopHoldTimer();
     }
 
     const [first, second] = touches;
@@ -81,6 +116,11 @@ export class GestureRecognizer implements GestureSink {
   release(id: number, t: number, remaining: ReadonlyMap<number, Point>, cancelled: boolean) {
     const s = this.session;
     if (s && cancelled) s.moved = true;
+    this.stopHoldTimer();
+    if (this.holding === id) {
+      this.holding = null;
+      this.cb.holdEnd?.(cancelled);
+    }
 
     const pr = this.pair;
     if (pr && pr.ids.includes(id)) {
@@ -96,6 +136,21 @@ export class GestureRecognizer implements GestureSink {
       this.session = null;
       if (!s.moved && s.maxFingers >= 2 && t - s.start < TAP_MAX_MS) this.cb.tap(s.maxFingers);
     }
+  }
+
+  private startHold(id: number) {
+    this.cancelHold = null;
+    const s = this.session;
+    const p = this.latest.get(id);
+    if (!s || s.moved || s.maxFingers !== 1 || !p) return;
+    s.moved = true; // a hold is never a tap
+    this.holding = id;
+    this.cb.hold?.(p);
+  }
+
+  private stopHoldTimer() {
+    this.cancelHold?.();
+    this.cancelHold = null;
   }
 }
 

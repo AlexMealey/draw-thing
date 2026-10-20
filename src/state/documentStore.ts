@@ -47,6 +47,8 @@ export interface DocumentState {
   reset(opts: { width: number; height: number; maxLayers: number }): void;
   /** Adds an empty layer above the active one and selects it. Null at the layer limit. */
   addLayer(): string | null;
+  /** Inserts a prepared layer (e.g. a duplicate) at a stack index and selects it. */
+  insertLayer(layer: LayerMeta, index: number): boolean;
   /** Removes a layer (never the last one) and selects the one below it. */
   removeLayer(id: string): void;
   selectLayer(id: string): void;
@@ -110,6 +112,15 @@ export const documentStore = createStore<DocumentState>()((set, get) => {
       layers.splice(activeIndex(s) + 1, 0, layer);
       set({ layers, activeLayerId: layer.id, layerCounter: n });
       return layer.id;
+    },
+
+    insertLayer(layer, index) {
+      const s = get();
+      if (s.layers.length >= s.maxLayers) return false;
+      const layers = [...s.layers];
+      layers.splice(Math.min(Math.max(0, index), layers.length), 0, layer);
+      set({ layers, activeLayerId: layer.id });
+      return true;
     },
 
     removeLayer(id) {

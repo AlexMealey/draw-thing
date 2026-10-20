@@ -38,8 +38,30 @@ test('100+ undo/redo steps reproduce every state exactly', async ({ page }) => {
   await page.waitForFunction(() => window.__drawthing !== undefined);
   await expect(page.getByRole('button', { name: 'Undo' })).toBeDisabled();
 
-  const brush = (name: string) => page.getByRole('radio', { name }).click();
-  const color = (c: string) => page.getByRole('button', { name: `Color ${c}` }).click();
+  // UI helpers for the Phase 5 interface: brushes and colors live in panels.
+  const panel = (name: RegExp) => page.getByRole('dialog', { name });
+  const closePanels = () => page.keyboard.press('Escape');
+  const tool = (name: 'Brush' | 'Eraser') =>
+    page.getByRole('button', { name, exact: true }).click();
+  const brush = async (name: string) => {
+    await tool('Brush');
+    if (!(await panel(/^Brushes$/).isVisible())) await tool('Brush');
+    await page.getByRole('radio', { name }).click();
+    await closePanels();
+  };
+  const color = async (c: string) => {
+    await page.getByRole('button', { name: 'Color', exact: true }).click();
+    await page.getByRole('button', { name: `Color ${c}` }).click();
+    await closePanels();
+  };
+  const layers = async () => {
+    if (!(await panel(/^Layers/).isVisible())) {
+      await page.getByRole('button', { name: 'Layers', exact: true }).click();
+    }
+    return panel(/^Layers/);
+  };
+  const layerButton = async (name: string) =>
+    (await layers()).getByRole('button', { name, exact: true }).click();
 
   // Each step changes the document; record the image after it.
   const states = [await hash(page)];
@@ -53,25 +75,29 @@ test('100+ undo/redo steps reproduce every state exactly', async ({ page }) => {
     await brush(name);
     await step(() => stroke(page, 240 + i * 70));
   }
-  await step(() => page.getByRole('button', { name: 'Add layer' }).click());
-  await step(() => page.locator('#layer-opacity').fill('60'));
+  await step(() => layerButton('Add layer'));
+  await step(async () => (await layers()).getByRole('slider', { name: /^Opacity/ }).fill('0.6'));
   await brush('Ink');
   await color('#ff375f');
   await step(() => stroke(page, 300, 300, 600));
-  await step(() => page.getByLabel('Blend').selectOption('multiply'));
-  await page.getByRole('button', { name: 'Eraser' }).click();
+  await step(async () =>
+    (await layers()).getByRole('combobox', { name: 'Blend' }).selectOption('multiply'),
+  );
+  await tool('Eraser');
   await step(() => stroke(page, 450, 200, 700));
-  await page.getByRole('button', { name: 'Eraser' }).click();
-  await step(() => page.getByRole('button', { name: 'Merge down' }).click());
-  await step(() => page.getByRole('button', { name: 'Add layer' }).click());
+  await tool('Brush');
+  await step(() => layerButton('Merge down'));
+  await step(() => layerButton('Add layer'));
   await color('#30d158');
   await step(() => stroke(page, 600));
-  await step(() => page.getByRole('button', { name: 'Delete' }).click());
-  await step(() => page.getByRole('button', { name: 'Hide background' }).click());
-  await step(() => page.getByRole('button', { name: 'Add layer' }).click());
+  await step(() => layerButton('Delete'));
+  await step(async () =>
+    (await layers()).getByRole('checkbox', { name: 'Hide background' }).click(),
+  );
+  await step(() => layerButton('Add layer'));
   await step(() => stroke(page, 700));
-  await step(() => page.getByRole('button', { name: 'Flatten' }).click());
-  await step(() => page.getByRole('button', { name: 'Clear' }).click());
+  await step(() => layerButton('Flatten'));
+  await step(() => layerButton('Clear'));
 
   const n = states.length - 1;
   expect(new Set(states).size).toBeGreaterThan(10); // the steps really changed pixels

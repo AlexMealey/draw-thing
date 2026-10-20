@@ -14,6 +14,16 @@ const MIN_SCALE = 0.02;
 const MAX_SCALE = 64;
 const QUARTER_TURN = Math.PI / 2;
 
+/** View-space margins (CSS px) covered by UI chrome. */
+export interface Insets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+export const NO_INSETS: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
+
 /**
  * Document pixels → view pixels (CSS px, relative to the canvas element).
  * Always a similarity transform: uniform scale, rotation, translation.
@@ -59,14 +69,17 @@ export class ViewTransform {
     this.set(multiply(about(rotate(rad), x, y), this.m), x, y);
   }
 
-  /** Centers the document, unrotated, filling `margin` of the view. */
-  fit(docW: number, docH: number, viewW: number, viewH: number, margin = 0.92) {
-    const s = Math.min(viewW / docW, viewH / docH) * margin;
-    this.set(
-      { a: s, b: 0, c: 0, d: s, e: (viewW - docW * s) / 2, f: (viewH - docH * s) / 2 },
-      viewW / 2,
-      viewH / 2,
-    );
+  /**
+   * Centers the document, unrotated, filling `margin` of the view area left free by `insets`
+   * (UI chrome such as the top bar and sidebar).
+   */
+  fit(docW: number, docH: number, viewW: number, viewH: number, insets = NO_INSETS, margin = 0.94) {
+    const w = Math.max(1, viewW - insets.left - insets.right);
+    const h = Math.max(1, viewH - insets.top - insets.bottom);
+    const s = Math.min(w / docW, h / docH) * margin;
+    const cx = insets.left + w / 2;
+    const cy = insets.top + h / 2;
+    this.set({ a: s, b: 0, c: 0, d: s, e: cx - (docW * s) / 2, f: cy - (docH * s) / 2 }, cx, cy);
   }
 
   /** Keeps the content centered when the view resizes (rotation, split view, window resize). */

@@ -1,15 +1,3 @@
-.app {
-  position: fixed;
-  inset: 0;
-}
-
-.canvasHost {
-  position: absolute;
-  inset: 0;
-  touch-action: none; /* no pan, zoom or pen flicks over the drawing surface */
-  contain: strict;
-}
-
 .canvas {
   position: absolute;
   inset: 0;
@@ -29,6 +17,7 @@
   text-align: center;
   color: var(--color-text);
   background: var(--color-surround);
+  z-index: 40;
 }
 
 .message button {

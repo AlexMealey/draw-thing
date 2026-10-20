@@ -1,0 +1,96 @@
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.brush {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  width: 100%;
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 0.04);
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.brush[aria-checked='true'] {
+  border-color: var(--color-accent);
+  background: rgb(10 132 255 / 0.18);
+}
+
+.brush img {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 56px;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.name {
+  font-size: 14px;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.preview {
+  display: block;
+  width: 100%;
+  height: 64px;
+  object-fit: contain;
+  margin-bottom: var(--space-1);
+  border-radius: 8px;
+  background: rgb(0 0 0 / 0.25);
+}
+
+.curve {
+  display: block;
+  width: 100%;
+  max-width: 220px;
+  aspect-ratio: 1;
+  margin: var(--space-1) auto var(--space-2);
+  border-radius: 8px;
+  background: rgb(0 0 0 / 0.25);
+  touch-action: none;
+}
+
+.curve .grid {
+  stroke: rgb(255 255 255 / 0.08);
+}
+
+.curve .guide {
+  stroke: rgb(255 255 255 / 0.3);
+  stroke-dasharray: 2 2;
+}
+
+.curve .line {
+  stroke: var(--color-accent);
+  stroke-width: 2;
+  fill: none;
+}
+
+.curve .handle {
+  fill: var(--color-text);
+  cursor: grab;
+}
+
+.curve .handle:focus-visible {
+  outline: none;
+  fill: var(--color-accent);
+}
+
+.footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-3);
+}

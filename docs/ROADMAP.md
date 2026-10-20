@@ -808,6 +808,20 @@ Keyboard shortcuts cover Windows and iPads with keyboards: `Ctrl/⌘+Z`, `Shift+
 
 Size and opacity sliders write to `toolStore` at most once per rAF. The engine reads the value at the next stroke begin.
 
+**As built (Phase 5):**
+- The app opens straight into the editor on a screen-size canvas. The gallery overlays it, with "Current canvas" and **New canvas** (five size presets plus a custom size, each showing its layer limit). Saved artworks join the gallery in Phase 6.
+- **Tool state is persisted per device** in a Zustand store backed by `localStorage`:
+  - the current tool, and a separate brush for painting and for erasing (as in Procreate)
+  - size, opacity and StreamLine per tool and brush
+  - Brush Settings edits, stored as overrides on the presets
+  - colour, recent colours and preferences
+- **Eyedropper:** the sidebar button arms a one-shot pick; the pen barrel button and touch-and-hold (450 ms, in pen mode) pick directly. A loupe ring floats above the pick point.
+- **Space+drag and middle-mouse drag pan**, via capture-phase listeners on the canvas.
+- **Layer thumbnails** are rendered by repeated 2× linear blits (so they don't alias) when drawing pauses.
+- **Brush previews** run the real dab pipeline on a sample stroke with a pressure swell.
+- **Fit to screen** keeps the canvas clear of the top bar and sidebar.
+- **No Radix:** the few primitives needed (panel/sheet, vertical slider, curve editor) are hand-rolled with `role`/`aria-*` and keyboard support, which keeps full control of touch behaviour.
+
 ### 5.2 Design system & responsiveness  — [M]
 
 - **Tokens** as CSS custom properties: `--space-1..6`, `--radius`, `--panel-bg`, and `--hit: 44px`, the minimum target for Apple HIG and Fluent touch. The default theme is a **neutral dark gray UI**, so it doesn't bias color perception. Use CSS Modules, and **Radix UI primitives** (Popover, Slider, Dialog) for accessible, unstyled behavior.

@@ -6,6 +6,7 @@ import {
   makeLayer,
 } from '../state/documentStore';
 import { historyStore } from '../state/historyStore';
+import { thumbnailStore } from '../state/thumbnailStore';
 import { parseHexColor } from './brush/color';
 import { DabGenerator } from './brush/DabGenerator';
 import { type BrushPreset, DEFAULT_PRESET_ID, presetById } from './brush/presets';
@@ -28,13 +29,15 @@ import {
   type Rgba,
   type StrokeMode,
 } from './layers/Compositor';
-import { type Affine, identity, multiply, toMat3 } from './math/affine';
+import { type Affine, apply, identity, multiply, toMat3 } from './math/affine';
 import { clampRect, DabBatch, unionRect } from './render/DabBatch';
+import { renderBrushPreview } from './render/BrushPreview';
 import { DabRenderer } from './render/DabRenderer';
 import { Presenter } from './render/Presenter';
 import { QuadPass, targetClip } from './render/QuadPass';
+import { Thumbnailer } from './render/Thumbnailer';
 import { ema, engineStats } from './stats';
-import { ViewTransform } from './view/ViewTransform';
+import { type Insets, NO_INSETS, ViewTransform } from './view/ViewTransform';
 
 export interface EngineOptions {
   /** Multi-finger tap: 2 = undo, 3 = redo, 4 = toggle UI. */
@@ -42,15 +45,34 @@ export interface EngineOptions {
   /** Short user-facing message, e.g. why a stroke was refused. */
   onNotice?: (message: string) => void;
   onContextLost?: () => void;
+  /** Document size in px; defaults to the screen size (× device pixel ratio). */
+  docSize?: { w: number; h: number };
+  /** View margins covered by UI chrome; "fit to screen" keeps the canvas clear of them. */
+  insets?: Insets;
+  /** Eyedropper loupe position (view CSS px) and color under it; null when it ends. */
+  onEyedropper?: (loupe: { x: number; y: number; color: string | null } | null) => void;
+  onColorPicked?: (color: string) => void;
 }
 
-const MAX_DOC_SIZE = 4096;
+/** Largest document side; also the size cap for new canvases. */
+export const MAX_DOC_SIZE = 4096;
+
+/** The default "screen size" canvas, like Procreate's. */
+export function screenDocSize(): { w: number; h: number } {
+  const dpr = devicePixelRatio || 1;
+  return {
+    w: Math.min(MAX_DOC_SIZE, Math.round(innerWidth * dpr)),
+    h: Math.min(MAX_DOC_SIZE, Math.round(innerHeight * dpr)),
+  };
+}
+
 const SURROUND = [0.173, 0.173, 0.18, 1] as const;
 const CURSOR_RING = [0.38, 0.38, 0.38, 0.85] as const; // premultiplied mid-gray: visible on light and dark
 const KEY_ZOOM = 1.25;
 /** The most recent history steps stay uncompressed so undoing them is instant. */
 const KEEP_RAW_STEPS = 8;
 const COMPRESS_DELAY_MS = 1500;
+const THUMBNAIL_DELAY_MS = 300;
 
 /** One in-progress stroke: its own copy of the tool settings and pipeline state. */
 interface Stroke {
@@ -106,6 +128,7 @@ export class Engine implements StrokeSink {
   private fboClip: Float32Array;
   private screenClip = new Float32Array(9);
   private gestureBase: Affine = identity();
+  private insets: Insets;
 
   private tool: ToolSettings = {
     preset: presetById(DEFAULT_PRESET_ID),
@@ -135,6 +158,15 @@ export class Engine implements StrokeSink {
   private captures = new Map<HistoryEntry, Capture>();
   private compressTimer: ReturnType<typeof setTimeout> | undefined;
 
+  private thumbnailer: Thumbnailer;
+  private thumbsDirty = new Set<string>();
+  private thumbTimer: ReturnType<typeof setTimeout> | undefined;
+
+  private eyedropperArmed = false;
+  private picking: { color: string | null } | null = null;
+  private spaceHeld = false;
+  private panPointer: { id: number; x: number; y: number } | null = null;
+
   private batch = new DabBatch();
   private overlay = new DabBatch();
   private raf = 0;
@@ -146,15 +178,16 @@ export class Engine implements StrokeSink {
     private opts: EngineOptions = {},
   ) {
     const gl = (this.gl = createGL(canvas));
+    this.insets = opts.insets ?? NO_INSETS;
     const rect = canvas.getBoundingClientRect();
     this.viewW = rect.width || innerWidth;
     this.viewH = rect.height || innerHeight;
 
-    // A "screen size" canvas, like Procreate's default. Canvas sizes arrive with the gallery.
     const dpr = devicePixelRatio || 1;
     const cap = Math.min(MAX_DOC_SIZE, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number);
-    this.docW = Math.min(cap, Math.round(this.viewW * dpr));
-    this.docH = Math.min(cap, Math.round(this.viewH * dpr));
+    const size = opts.docSize ?? screenDocSize();
+    this.docW = Math.max(1, Math.min(cap, Math.round(size.w)));
+    this.docH = Math.max(1, Math.min(cap, Math.round(size.h)));
     this.strokeBuf = createTarget(gl, this.docW, this.docH, strokeFormat(gl));
     this.fboClip = targetClip(this.strokeBuf);
     this.quad = new QuadPass(gl);
@@ -162,6 +195,8 @@ export class Engine implements StrokeSink {
     this.dabs = new DabRenderer(gl);
     this.presenter = new Presenter(gl, this.quad);
     this.tileIO = new TileIO(gl, tileGrid(this.docW, this.docH));
+    this.thumbnailer = new Thumbnailer(gl, this.docW, this.docH);
+    thumbnailStore.setState({ urls: {} });
     this.history = new History(
       { maxBytes: historyBudgetBytes(), maxEntries: 250 },
       this.publishHistory,
@@ -174,7 +209,7 @@ export class Engine implements StrokeSink {
 
     canvas.width = Math.round(this.viewW * dpr);
     canvas.height = Math.round(this.viewH * dpr);
-    this.view.fit(this.docW, this.docH, this.viewW, this.viewH);
+    this.view.fit(this.docW, this.docH, this.viewW, this.viewH, this.insets);
 
     const gestures = new GestureRecognizer({
       transformStart: () => {
@@ -190,6 +225,15 @@ export class Engine implements StrokeSink {
       },
       tap: (fingers) => this.opts.onTap?.(fingers),
       quickPinch: () => this.fitToScreen(),
+      hold: (p) => {
+        const [x, y] = this.view.viewToDoc(p.x, p.y);
+        this.startPick(x, y);
+      },
+      holdMove: (p) => {
+        const [x, y] = this.view.viewToDoc(p.x, p.y);
+        this.pickAt(x, y);
+      },
+      holdEnd: (cancelled) => this.finishPick(!cancelled),
     });
     this.input = new PointerInput(canvas, this, gestures, (x, y) => this.view.viewToDoc(x, y));
 
@@ -203,6 +247,15 @@ export class Engine implements StrokeSink {
     window.addEventListener('wheel', this.onWheel, { passive: false, signal });
     window.addEventListener('keydown', this.onKey, { signal });
     canvas.addEventListener('webglcontextlost', this.onContextLost, { signal });
+    // Space+drag and middle-mouse drag pan. Capture-phase listeners on the canvas run before
+    // PointerInput's, so a pan never reaches the stroke pipeline.
+    const capture = { capture: true, passive: false, signal } as const;
+    canvas.addEventListener('pointerdown', this.onPanDown, capture);
+    canvas.addEventListener('pointermove', this.onPanMove, capture);
+    canvas.addEventListener('pointerup', this.onPanEnd, capture);
+    canvas.addEventListener('pointercancel', this.onPanEnd, capture);
+    window.addEventListener('keydown', this.onSpace, { signal });
+    window.addEventListener('keyup', this.onSpace, { signal });
 
     engineStats.running = true;
     engineStats.docSize = `${this.docW}×${this.docH}`;
@@ -221,8 +274,13 @@ export class Engine implements StrokeSink {
     this.requestFrame(); // cursor ring size
   }
 
+  /** UI chrome changed (shown, hidden, sidebar moved): affects the next fit. */
+  setInsets(insets: Insets) {
+    this.insets = insets;
+  }
+
   fitToScreen() {
-    this.view.fit(this.docW, this.docH, this.viewW, this.viewH);
+    this.view.fit(this.docW, this.docH, this.viewW, this.viewH, this.insets);
     this.requestFrame();
   }
 
@@ -236,6 +294,7 @@ export class Engine implements StrokeSink {
     const before = this.tileIO.readAll(target);
     if (before.size === 0) return;
     this.compositor.clearTarget(target, null);
+    this.markThumbs([meta.id]);
     this.pushHistory({
       label: 'Clear layer',
       pixels: new Map([[meta.id, TileIO.diff(before, new Map())]]),
@@ -267,6 +326,7 @@ export class Engine implements StrokeSink {
       this.compositor.blendLayer(merged, src, upper.opacity, upper.blendMode, null);
     deleteTarget(this.gl, dst);
     this.layers.set(lower.id, merged);
+    this.markThumbs([lower.id]);
     this.withoutRecording(() => {
       doc.updateLayer(lower.id, { opacity: 1 });
       doc.removeLayer(upper.id); // selects `lower`; syncLayers frees `src`
@@ -308,6 +368,55 @@ export class Engine implements StrokeSink {
     });
   }
 
+  /** The next touch on the canvas picks a color instead of painting. */
+  setEyedropper(armed: boolean) {
+    this.eyedropperArmed = armed;
+  }
+
+  /** Allow painting with a finger until a pen has been used. */
+  setFingerDrawing(enabled: boolean) {
+    this.input.fingerDrawing = enabled;
+  }
+
+  /** Copies the active layer (pixels and properties) above itself. */
+  duplicateLayer() {
+    const doc = documentStore.getState();
+    const i = activeIndex(doc);
+    const meta = doc.layers[i];
+    const src = meta && this.layers.get(meta.id);
+    if (!meta || !src || this.stroke) return;
+    if (doc.layers.length >= doc.maxLayers) {
+      return this.notice(`Layer limit reached (${doc.maxLayers} at this canvas size)`);
+    }
+    const before = snapshot(doc);
+    const copy = createTarget(this.gl, this.docW, this.docH);
+    this.compositor.blendLayer(copy, src, 1, 'normal', null); // exact copy onto transparent
+    const fresh = makeLayer(`${meta.name} copy`);
+    const layer = { ...meta, id: fresh.id, name: fresh.name, locked: false };
+    this.layers.set(layer.id, copy);
+    this.markThumbs([layer.id]);
+    this.withoutRecording(() => doc.insertLayer(layer, i + 1));
+    this.pushHistory({
+      label: 'Duplicate layer',
+      doc: { before, after: snapshot(documentStore.getState()) },
+      pixels: new Map([[layer.id, TileIO.diff(new Map(), this.tileIO.readAll(copy))]]),
+      time: performance.now(),
+      bytes: 0,
+    });
+  }
+
+  /** Small PNG data URL of the whole composited document, for the gallery. */
+  documentThumbnail(): string | null {
+    if (this.disposed || this.lost) return null;
+    if (this.docDirty) this.renderNow();
+    return this.thumbnailer.render(this.compositor.output);
+  }
+
+  /** A sample stroke of a brush, as a PNG data URL, for the brush library. */
+  brushPreview(preset: BrushPreset): string {
+    return renderBrushPreview(this.gl, this.dabs, preset);
+  }
+
   undo() {
     if (!this.stroke) this.enqueueHistory('undo');
   }
@@ -340,6 +449,7 @@ export class Engine implements StrokeSink {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
     clearTimeout(this.compressTimer);
+    clearTimeout(this.thumbTimer);
     this.unsubscribe();
     this.input.dispose();
     this.ro.disconnect();
@@ -348,6 +458,7 @@ export class Engine implements StrokeSink {
     if (this.lost) return;
     // No loseContext(): under StrictMode a new Engine reuses this canvas's context.
     for (const entry of this.captures.keys()) entry.pending?.(); // frees the readback buffers
+    this.thumbnailer.dispose();
     this.dabs.dispose();
     this.presenter.dispose();
     this.compositor.dispose();
@@ -359,7 +470,8 @@ export class Engine implements StrokeSink {
 
   // ── StrokeSink (called by PointerInput) ─────────────────────────────────────
 
-  begin(s: InputSample, opts: { pointerType: string; eraser: boolean }) {
+  begin(s: InputSample, opts: { pointerType: string; eraser: boolean; barrel: boolean }) {
+    if (this.eyedropperArmed || opts.barrel) return this.startPick(s.x, s.y);
     if (this.pending) this.renderNow(); // pen lifted and touched down within one frame
     const doc = documentStore.getState();
     const layer = doc.layers[activeIndex(doc)];
@@ -390,6 +502,11 @@ export class Engine implements StrokeSink {
   }
 
   extend(samples: InputSample[]) {
+    const last = samples[samples.length - 1];
+    if (this.picking) {
+      if (last) this.pickAt(last.x, last.y);
+      return;
+    }
     if (!this.stroke || this.pending) return;
     for (const s of samples) this.queue.push(s);
     this.requestFrame();
@@ -406,12 +523,14 @@ export class Engine implements StrokeSink {
   }
 
   end() {
+    if (this.picking) return this.finishPick(true);
     if (!this.stroke) return;
     this.pending = 'commit';
     this.requestFrame();
   }
 
   cancel() {
+    if (this.picking) return this.finishPick(false);
     if (!this.stroke) return;
     this.pending = 'cancel';
     this.queue.length = 0;
@@ -496,6 +615,7 @@ export class Engine implements StrokeSink {
               capture,
             );
           }
+          this.markThumbs([stroke.layerId]);
           // A stroke whose layer stopped being active mid-stroke lands in a cached range.
           if (stroke.layerId !== doc.activeLayerId) this.compositor.invalidate();
         }
@@ -633,9 +753,14 @@ export class Engine implements StrokeSink {
         this.layers.delete(id);
       }
     }
+    const fresh: string[] = [];
     for (const id of ids) {
-      if (!this.layers.has(id)) this.layers.set(id, createTarget(this.gl, this.docW, this.docH));
+      if (!this.layers.has(id)) {
+        this.layers.set(id, createTarget(this.gl, this.docW, this.docH));
+        fresh.push(id);
+      }
     }
+    this.markThumbs(fresh.concat([...ids].filter((id) => !thumbnailStore.getState().urls[id])));
     engineStats.layers = this.layers.size;
     const layerMB = (this.docW * this.docH * 4) / (1024 * 1024);
     engineStats.gpuMB = Math.round(
@@ -739,6 +864,7 @@ export class Engine implements StrokeSink {
     else this.history.stepForward();
     this.compositor.invalidate();
     this.markDirty('all');
+    this.markThumbs([...writes.keys()]);
     this.notice(`${direction === 'undo' ? 'Undo' : 'Redo'}: ${entry.label}`);
   }
 
@@ -783,6 +909,111 @@ export class Engine implements StrokeSink {
       this.suppressRecord--;
     }
   }
+
+  // ── Eyedropper ──────────────────────────────────────────────────────────────
+
+  private startPick(x: number, y: number) {
+    this.picking = { color: null };
+    this.hoverSample = null;
+    this.pickAt(x, y);
+  }
+
+  private pickAt(x: number, y: number) {
+    if (!this.picking) return;
+    this.picking.color = this.colorAt(x, y) ?? this.picking.color;
+    const [vx, vy] = apply(this.view.docToView, x, y);
+    this.opts.onEyedropper?.({ x: vx, y: vy, color: this.picking.color });
+  }
+
+  private finishPick(commit: boolean) {
+    const color = this.picking?.color;
+    this.picking = null;
+    this.opts.onEyedropper?.(null);
+    if (commit && color) this.opts.onColorPicked?.(color);
+  }
+
+  /** The composited color at a document point, or null outside it / where it's transparent. */
+  private colorAt(x: number, y: number): string | null {
+    const px = Math.floor(x);
+    const py = Math.floor(y);
+    if (px < 0 || py < 0 || px >= this.docW || py >= this.docH) return null;
+    if (this.docDirty) this.renderNow();
+    const gl = this.gl;
+    const data = new Uint8Array(4);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.compositor.output.fbo);
+    gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    const [r = 0, g = 0, b = 0, a = 0] = data;
+    if (a === 0) return null;
+    const hex = (v: number) =>
+      Math.min(255, Math.round((v * 255) / a))
+        .toString(16)
+        .padStart(2, '0');
+    return `#${hex(r)}${hex(g)}${hex(b)}`;
+  }
+
+  // ── Thumbnails ──────────────────────────────────────────────────────────────
+
+  private markThumbs(ids: string[]) {
+    if (ids.length === 0) return;
+    for (const id of ids) this.thumbsDirty.add(id);
+    clearTimeout(this.thumbTimer);
+    this.thumbTimer = setTimeout(this.renderThumbs, THUMBNAIL_DELAY_MS);
+  }
+
+  private renderThumbs = () => {
+    if (this.disposed || this.lost) return;
+    if (this.stroke) {
+      this.thumbTimer = setTimeout(this.renderThumbs, THUMBNAIL_DELAY_MS); // not mid-stroke
+      return;
+    }
+    const current = thumbnailStore.getState().urls;
+    const urls: Record<string, string> = {};
+    for (const [id, target] of this.layers) {
+      const existing = current[id];
+      urls[id] = this.thumbsDirty.has(id) || !existing ? this.thumbnailer.render(target) : existing;
+    }
+    this.thumbsDirty.clear();
+    thumbnailStore.setState({ urls });
+  };
+
+  // ── Panning with Space or the middle mouse button ───────────────────────────
+
+  private onSpace = (e: KeyboardEvent) => {
+    if (e.code !== 'Space' || isEditable(e.target)) return;
+    e.preventDefault(); // no page scroll, no button activation
+    this.spaceHeld = e.type === 'keydown';
+    if (!this.panPointer) this.canvas.style.cursor = this.spaceHeld ? 'grab' : '';
+  };
+
+  private onPanDown = (e: PointerEvent) => {
+    const pan =
+      (this.spaceHeld && e.pointerType !== 'touch') ||
+      (e.pointerType === 'mouse' && e.button === 1);
+    if (!pan || this.stroke) return;
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    this.canvas.setPointerCapture(e.pointerId);
+    this.panPointer = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    this.canvas.style.cursor = 'grabbing';
+  };
+
+  private onPanMove = (e: PointerEvent) => {
+    const p = this.panPointer;
+    if (!p || e.pointerId !== p.id) return;
+    e.stopImmediatePropagation();
+    this.view.panBy(e.clientX - p.x, e.clientY - p.y);
+    p.x = e.clientX;
+    p.y = e.clientY;
+    this.requestFrame();
+  };
+
+  private onPanEnd = (e: PointerEvent) => {
+    if (!this.panPointer || e.pointerId !== this.panPointer.id) return;
+    e.stopImmediatePropagation();
+    this.panPointer = null;
+    this.canvas.style.cursor = this.spaceHeld ? 'grab' : '';
+  };
 
   private notice(message: string) {
     this.opts.onNotice?.(message);
@@ -838,7 +1069,7 @@ export class Engine implements StrokeSink {
         this.view.zoomAt(1 / KEY_ZOOM, cx, cy);
         break;
       case '0':
-        this.view.fit(this.docW, this.docH, this.viewW, this.viewH);
+        this.view.fit(this.docW, this.docH, this.viewW, this.viewH, this.insets);
         break;
       case 'z':
       case 'Z':

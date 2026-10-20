@@ -1,7 +1,7 @@
 .toast {
   position: fixed;
   left: 50%;
-  top: calc(var(--safe-top) + var(--space-4));
+  top: calc(var(--safe-top) + var(--topbar-h) + var(--space-3));
   transform: translateX(-50%);
   max-width: calc(100vw - 2 * var(--space-4));
   padding: var(--space-2) var(--space-4);

@@ -1,0 +1,29 @@
+.sidebar {
+  --slider-h: clamp(96px, 24dvh, 200px);
+  position: fixed;
+  top: 50%;
+  left: calc(var(--safe-left) + var(--space-2));
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 4px;
+  border: 1px solid var(--color-panel-border);
+  border-radius: 22px;
+  background: rgb(28 28 30 / 0.88);
+  z-index: 15;
+}
+
+.sidebar[data-side='right'] {
+  left: auto;
+  right: calc(var(--safe-right) + var(--space-2));
+}
+
+/* Short landscape screens: keep it clear of the top bar. */
+@media (max-height: 560px) {
+  .sidebar {
+    --slider-h: clamp(64px, 18dvh, 120px);
+    top: calc(50% + var(--topbar-h) / 2);
+  }
+}

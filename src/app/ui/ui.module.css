@@ -1,0 +1,112 @@
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--hit);
+  min-height: var(--hit);
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.iconButton:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.iconButton[aria-pressed='true'],
+.iconButton[aria-expanded='true'] {
+  color: var(--color-accent);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .iconButton:not(:disabled):hover {
+    background: rgb(255 255 255 / 0.08);
+  }
+}
+
+.textButton {
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.08);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.textButton:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.primary {
+  background: var(--color-accent);
+}
+
+.danger {
+  color: #ff6961;
+}
+
+.section {
+  margin: var(--space-3) 0 var(--space-1);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 7.5rem 1fr 3.2rem;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 40px;
+  font-size: 14px;
+}
+
+.row input[type='range'] {
+  width: 100%;
+  touch-action: none;
+  accent-color: var(--color-accent);
+}
+
+.row output {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+
+.switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: var(--hit);
+  font-size: 15px;
+}
+
+.switch input {
+  width: 22px;
+  height: 22px;
+  accent-color: var(--color-accent);
+}
+
+.checker {
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #d1d1d6 25%, transparent 25%),
+    linear-gradient(-45deg, #d1d1d6 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #d1d1d6 75%),
+    linear-gradient(-45deg, transparent 75%, #d1d1d6 75%);
+  background-size: 10px 10px;
+  background-position:
+    0 0,
+    0 5px,
+    5px -5px,
+    -5px 0;
+}
