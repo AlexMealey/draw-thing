@@ -9,21 +9,29 @@ interface Props {
   onEngine: (engine: Engine | null) => void;
   onTap: (fingers: number) => void;
   onNotice: (message: string) => void;
+  /** With ?debug, exposes the engine as `window.__drawthing` for end-to-end tests. */
+  exposeForTests?: boolean;
+}
+
+declare global {
+  interface Window {
+    __drawthing?: Engine;
+  }
 }
 
 /**
  * Hosts the drawing canvas. The Engine is created once per mount and renders on its own;
  * React only forwards settings and never re-renders during a stroke.
  */
-export function CanvasViewport({ tool, onEngine, onTap, onNotice }: Props) {
+export function CanvasViewport({ tool, onEngine, onTap, onNotice, exposeForTests }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<Engine | null>(null);
-  const callbacks = useRef({ onEngine, onTap, onNotice });
+  const callbacks = useRef({ onEngine, onTap, onNotice, exposeForTests });
   const [supported] = useState(hasWebGL2);
   const [contextLost, setContextLost] = useState(false);
 
   useEffect(() => {
-    callbacks.current = { onEngine, onTap, onNotice };
+    callbacks.current = { onEngine, onTap, onNotice, exposeForTests };
   });
 
   useEffect(() => {
@@ -36,7 +44,9 @@ export function CanvasViewport({ tool, onEngine, onTap, onNotice }: Props) {
     });
     engineRef.current = engine;
     callbacks.current.onEngine(engine);
+    if (callbacks.current.exposeForTests) window.__drawthing = engine;
     return () => {
+      if (window.__drawthing === engine) delete window.__drawthing;
       engine.dispose();
       engineRef.current = null;
       callbacks.current.onEngine(null);

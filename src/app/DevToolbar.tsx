@@ -1,4 +1,5 @@
 import type { BrushPreset } from '../engine/brush/presets';
+import { useHistory } from '../state/historyStore';
 import styles from './DevToolbar.module.css';
 
 const COLORS = ['#1c1c1e', '#f2f2f7', '#ff375f', '#ff9f0a', '#30d158', '#0a84ff', '#bf5af2'];
@@ -22,12 +23,16 @@ interface Props {
   layersOpen: boolean;
   onLayers: () => void;
   onFit: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
 }
 
 /** Temporary controls for testing the engine; replaced by the real UI in Phase 5. */
 export function DevToolbar(props: Props) {
   const { presets, preset, adjust, color, eraser } = props;
   const set = (patch: Partial<BrushAdjustments>) => props.onAdjust({ ...adjust, ...patch });
+  const undoLabel = useHistory((h) => h.undoLabel);
+  const redoLabel = useHistory((h) => h.redoLabel);
 
   return (
     <div className={styles.toolbar} role="toolbar" aria-label="Brush">
@@ -88,6 +93,22 @@ export function DevToolbar(props: Props) {
           onClick={() => props.onEraser(!eraser)}
         >
           Eraser
+        </button>
+        <button
+          className={styles.button}
+          onClick={props.onUndo}
+          disabled={!undoLabel}
+          title={undoLabel ? `Undo ${undoLabel}` : 'Nothing to undo'}
+        >
+          Undo
+        </button>
+        <button
+          className={styles.button}
+          onClick={props.onRedo}
+          disabled={!redoLabel}
+          title={redoLabel ? `Redo ${redoLabel}` : 'Nothing to redo'}
+        >
+          Redo
         </button>
         <button className={styles.button} aria-pressed={props.layersOpen} onClick={props.onLayers}>
           Layers

@@ -26,3 +26,15 @@ export function gpuBudgetBytes(): number {
 export function maxLayersFor(layerBytes: number, budget: number): number {
   return Math.max(1, Math.floor((budget - FIXED_LAYER_EQUIVALENTS * layerBytes) / layerBytes));
 }
+
+/** Undo history budget (ROADMAP §1.4): bytes, not steps. */
+export function historyBudgetBytes(): number {
+  const nav = navigator as Navigator & { deviceMemory?: number };
+  if (nav.deviceMemory !== undefined) {
+    if (nav.deviceMemory >= 8) return 512 * MB;
+    if (nav.deviceMemory >= 4) return 256 * MB;
+    return 128 * MB;
+  }
+  const os = detectOS(nav.userAgent, nav.maxTouchPoints);
+  return os === 'ipados' || os === 'ios' ? 256 * MB : 512 * MB;
+}

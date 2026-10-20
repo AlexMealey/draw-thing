@@ -20,6 +20,8 @@ export const engineStats = {
   maxLayers: 0,
   /** Estimated GPU memory for layers, caches and the stroke buffer. */
   gpuMB: 0,
+  historySteps: 0,
+  historyMB: 0,
 };
 
 export const ema = (prev: number, next: number, k = 0.2) =>

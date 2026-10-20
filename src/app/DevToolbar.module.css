@@ -45,6 +45,11 @@
   cursor: pointer;
 }
 
+.button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .button[aria-pressed='true'],
 .button[aria-checked='true'] {
   background: var(--color-accent);

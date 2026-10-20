@@ -151,6 +151,12 @@ type HistoryEntry =
 - The history budget is **bytes, not steps**: about 256 MB on iPad and 512 MB on Windows. Evict the oldest entries. Compress idle entries in a worker with `CompressionStream('deflate')` or `fflate`.
 - The *after* tiles double as the **autosave payload**, so persistence never reads back from the GPU a second time.
 - Zustand only holds `{ canUndo, canRedo }`.
+- **As built (Phase 4):**
+  - Layer-panel changes (add, delete, move, properties, background) are recorded automatically from the document store. Consecutive opacity or background-colour changes within 1.5 s merge into one step.
+  - Merge Down, Flatten and Clear record their own entries, with sparse whole-layer tile diffs.
+  - A deleted layer's pixels are kept in its entry, so undo brings it back intact.
+  - Steps more than 8 away from the cursor are deflated with `CompressionStream` once drawing pauses. Undo inflates them asynchronously, through a queue that applies steps in order.
+  - `e2e/history.spec.ts` checks that 150 undo/redo steps reproduce every intermediate image exactly.
 
 ---
 

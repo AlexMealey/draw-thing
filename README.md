@@ -3,7 +3,14 @@
 A pen-first drawing PWA for iPad + Apple Pencil and Windows tablets + Surface/MPP pens.
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the architecture and phased plan.
 
-**Status:** Phase 3. The WebGL2 engine, pen input, gestures and the brush engine (Ink, Pencil, Airbrush, Marker, Chalk, plus an eraser) are in, and so are layers: 9 blend modes, opacity, alpha lock, lock, merge down, flatten and a GPU-memory layer budget. Undo and saving come in later phases.
+**Status:** Phase 4. In so far:
+
+- the WebGL2 engine, pen input and gestures
+- the brush engine (Ink, Pencil, Airbrush, Marker, Chalk, plus an eraser)
+- layers: 9 blend modes, alpha lock, merge down, flatten and a layer budget
+- undo/redo for every stroke and layer change: 2-finger tap, 3-finger tap, `Ctrl+Z` and `Ctrl+Shift+Z`
+
+Saving comes next.
 
 ## Requirements
 
@@ -32,13 +39,13 @@ Run npm inside the dev image with `./scripts/dnpm`:
 ./scripts/dnpm run check
 ```
 
-| Command                        | What it does                                                        |
-| ------------------------------ | ------------------------------------------------------------------- |
-| `docker compose up dev`        | Vite dev server on http://localhost:5173 (no service worker in dev) |
-| `./scripts/dnpm run check`     | Typecheck, lint, format check and unit tests                        |
-| `./scripts/dnpm run build`     | Production build into `dist/`                                       |
-| `./scripts/dnpm install <pkg>` | Add a dependency (updates `package.json` and the lockfile)          |
-| `./scripts/e2e`                | Playwright end-to-end tests (manifest, gestures, offline reload)    |
+| Command                        | What it does                                                             |
+| ------------------------------ | ------------------------------------------------------------------------ |
+| `docker compose up dev`        | Vite dev server on http://localhost:5173 (no service worker in dev)      |
+| `./scripts/dnpm run check`     | Typecheck, lint, format check and unit tests                             |
+| `./scripts/dnpm run build`     | Production build into `dist/`                                            |
+| `./scripts/dnpm install <pkg>` | Add a dependency (updates `package.json` and the lockfile)               |
+| `./scripts/e2e`                | Playwright end-to-end tests (PWA install/offline, pixel-exact undo/redo) |
 
 When `package.json` changes under you (e.g. after a `git pull`), refresh the dependency volume:
 

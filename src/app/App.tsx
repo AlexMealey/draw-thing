@@ -44,15 +44,21 @@ export function App({ debug }: { debug: boolean }) {
   }, []);
 
   const onTap = useCallback((fingers: number) => {
-    if (fingers === 4) setUiHidden((hidden) => !hidden);
-    else if (fingers === 2) console.info('2-finger tap: undo arrives in Phase 4');
-    else if (fingers === 3) console.info('3-finger tap: redo arrives in Phase 4');
+    if (fingers === 2) engineRef.current?.undo();
+    else if (fingers === 3) engineRef.current?.redo();
+    else if (fingers === 4) setUiHidden((hidden) => !hidden);
   }, []);
 
   return (
     <div className={styles.app}>
       <main className={styles.canvasHost} aria-label="Canvas">
-        <CanvasViewport tool={tool} onEngine={onEngine} onTap={onTap} onNotice={setNotice} />
+        <CanvasViewport
+          tool={tool}
+          onEngine={onEngine}
+          onTap={onTap}
+          onNotice={setNotice}
+          exposeForTests={debug}
+        />
       </main>
       {!uiHidden && (
         <DevToolbar
@@ -71,6 +77,8 @@ export function App({ debug }: { debug: boolean }) {
           layersOpen={layersOpen}
           onLayers={() => setLayersOpen((open) => !open)}
           onFit={() => engineRef.current?.fitToScreen()}
+          onUndo={() => engineRef.current?.undo()}
+          onRedo={() => engineRef.current?.redo()}
         />
       )}
       {!uiHidden && layersOpen && <LayersPanel engine={getEngine} onNotice={setNotice} />}

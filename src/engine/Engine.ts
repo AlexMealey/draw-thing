@@ -1,4 +1,11 @@
-import { activeIndex, documentStore, type DocumentState, makeLayer } from '../state/documentStore';
+import {
+  activeIndex,
+  documentStore,
+  type DocumentState,
+  type LayerMeta,
+  makeLayer,
+} from '../state/documentStore';
+import { historyStore } from '../state/historyStore';
 import { parseHexColor } from './brush/color';
 import { DabGenerator } from './brush/DabGenerator';
 import { type BrushPreset, DEFAULT_PRESET_ID, presetById } from './brush/presets';
@@ -7,9 +14,13 @@ import { type Pt, StrokePath } from './brush/StrokePath';
 import type { ToolSettings } from './brush/tool';
 import { createGL, isDesynchronized } from './gl/context';
 import { createTarget, deleteTarget, type Rect, strokeFormat, type Target } from './gl/target';
+import { compressTile, inflateTile } from './history/compress';
+import { type DocSnapshot, History, type HistoryEntry, type LayerTiles } from './history/History';
+import { type Capture, TileIO } from './history/TileIO';
+import { alignToTiles, tileGrid } from './history/tiles';
 import { GestureRecognizer } from './input/GestureRecognizer';
 import { type InputSample, PointerInput, type StrokeSink } from './input/PointerInput';
-import { gpuBudgetBytes, maxLayersFor } from './layers/budget';
+import { gpuBudgetBytes, historyBudgetBytes, maxLayersFor } from './layers/budget';
 import {
   Compositor,
   type GpuLayer,
@@ -37,6 +48,9 @@ const MAX_DOC_SIZE = 4096;
 const SURROUND = [0.173, 0.173, 0.18, 1] as const;
 const CURSOR_RING = [0.38, 0.38, 0.38, 0.85] as const; // premultiplied mid-gray: visible on light and dark
 const KEY_ZOOM = 1.25;
+/** The most recent history steps stay uncompressed so undoing them is instant. */
+const KEEP_RAW_STEPS = 8;
+const COMPRESS_DELAY_MS = 1500;
 
 /** One in-progress stroke: its own copy of the tool settings and pipeline state. */
 interface Stroke {
@@ -111,6 +125,16 @@ export class Engine implements StrokeSink {
   /** Document area that needs recompositing: a rect, everything, or nothing. */
   private docDirty: Rect | 'all' | null = 'all';
 
+  private tileIO: TileIO;
+  private history: History;
+  /** >0 while the engine itself changes the store (merge, flatten, undo), so it isn't recorded. */
+  private suppressRecord = 0;
+  /** Undo/redo run in order; compressed tiles inflate asynchronously. */
+  private historyQueue: Promise<void> = Promise.resolve();
+  /** Stroke tiles still being read back from the GPU. */
+  private captures = new Map<HistoryEntry, Capture>();
+  private compressTimer: ReturnType<typeof setTimeout> | undefined;
+
   private batch = new DabBatch();
   private overlay = new DabBatch();
   private raf = 0;
@@ -137,6 +161,11 @@ export class Engine implements StrokeSink {
     this.compositor = new Compositor(gl, this.quad, this.docW, this.docH);
     this.dabs = new DabRenderer(gl);
     this.presenter = new Presenter(gl, this.quad);
+    this.tileIO = new TileIO(gl, tileGrid(this.docW, this.docH));
+    this.history = new History(
+      { maxBytes: historyBudgetBytes(), maxEntries: 250 },
+      this.publishHistory,
+    );
 
     const maxLayers = maxLayersFor(this.docW * this.docH * 4, gpuBudgetBytes());
     documentStore.getState().reset({ width: this.docW, height: this.docH, maxLayers });
@@ -180,6 +209,7 @@ export class Engine implements StrokeSink {
     engineStats.desynchronized = isDesynchronized(gl);
     engineStats.strokeFormat = this.strokeBuf.format;
     engineStats.maxLayers = maxLayers;
+    this.publishHistory();
     this.requestFrame();
   }
 
@@ -203,7 +233,15 @@ export class Engine implements StrokeSink {
     const target = meta && this.layers.get(meta.id);
     if (!meta || !target || this.stroke) return;
     if (meta.locked) return this.notice(`${meta.name} is locked`);
+    const before = this.tileIO.readAll(target);
+    if (before.size === 0) return;
     this.compositor.clearTarget(target, null);
+    this.pushHistory({
+      label: 'Clear layer',
+      pixels: new Map([[meta.id, TileIO.diff(before, new Map())]]),
+      time: performance.now(),
+      bytes: 0,
+    });
     this.markDirty('all');
   }
 
@@ -220,30 +258,88 @@ export class Engine implements StrokeSink {
     const src = this.layers.get(upper.id);
     const dst = this.layers.get(lower.id);
     if (!src || !dst || this.stroke) return;
+    const before = snapshot(doc);
+    const lowerBefore = this.tileIO.readAll(dst);
+    const upperBefore = this.tileIO.readAll(src);
     const merged = createTarget(this.gl, this.docW, this.docH);
     this.compositor.blendLayer(merged, dst, lower.opacity, 'normal', null);
     if (upper.visible)
       this.compositor.blendLayer(merged, src, upper.opacity, upper.blendMode, null);
     deleteTarget(this.gl, dst);
     this.layers.set(lower.id, merged);
-    doc.updateLayer(lower.id, { opacity: 1 });
-    doc.removeLayer(upper.id); // selects `lower`; syncLayers frees `src`
+    this.withoutRecording(() => {
+      doc.updateLayer(lower.id, { opacity: 1 });
+      doc.removeLayer(upper.id); // selects `lower`; syncLayers frees `src`
+    });
+    this.pushHistory({
+      label: 'Merge down',
+      doc: { before, after: snapshot(documentStore.getState()) },
+      pixels: new Map([
+        [lower.id, TileIO.diff(lowerBefore, this.tileIO.readAll(merged))],
+        [upper.id, TileIO.diff(upperBefore, new Map())],
+      ]),
+      time: performance.now(),
+      bytes: 0,
+    });
   }
 
   /** Composites all visible layers into a single new layer. Hidden layers are discarded. */
   flatten() {
     const doc = documentStore.getState();
     if (this.stroke || doc.layers.length < 2) return;
+    const before = snapshot(doc);
+    const pixels = new Map<string, LayerTiles>();
+    for (const l of doc.layers) {
+      const t = this.layers.get(l.id);
+      if (t) pixels.set(l.id, TileIO.diff(this.tileIO.readAll(t), new Map()));
+    }
     const target = createTarget(this.gl, this.docW, this.docH);
     this.compositor.flattenInto(this.gpuLayers(doc), target, null);
     const layer = makeLayer('Flattened');
+    pixels.set(layer.id, TileIO.diff(new Map(), this.tileIO.readAll(target)));
     this.layers.set(layer.id, target); // registered before the store change, so it's kept
-    doc.replaceLayers([layer], layer.id);
+    this.withoutRecording(() => doc.replaceLayers([layer], layer.id));
+    this.pushHistory({
+      label: 'Flatten',
+      doc: { before, after: snapshot(documentStore.getState()) },
+      pixels,
+      time: performance.now(),
+      bytes: 0,
+    });
+  }
+
+  undo() {
+    if (!this.stroke) this.enqueueHistory('undo');
+  }
+
+  redo() {
+    if (!this.stroke) this.enqueueHistory('redo');
+  }
+
+  /** Resolves when queued undo/redo steps have been applied. */
+  whenIdle(): Promise<void> {
+    return this.historyQueue;
+  }
+
+  /** Test hook: renders now and returns an FNV-1a hash of the composited document. */
+  debugHash(): string {
+    this.renderNow();
+    const gl = this.gl;
+    const out = this.compositor.output;
+    const data = new Uint8Array(out.w * out.h * 4);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, out.fbo);
+    gl.readPixels(0, 0, out.w, out.h, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    const words = new Uint32Array(data.buffer);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < words.length; i++) h = Math.imul(h ^ (words[i] ?? 0), 0x01000193);
+    return (h >>> 0).toString(16).padStart(8, '0');
   }
 
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
+    clearTimeout(this.compressTimer);
     this.unsubscribe();
     this.input.dispose();
     this.ro.disconnect();
@@ -251,6 +347,7 @@ export class Engine implements StrokeSink {
     engineStats.running = false;
     if (this.lost) return;
     // No loseContext(): under StrictMode a new Engine reuses this canvas's context.
+    for (const entry of this.captures.keys()) entry.pending?.(); // frees the readback buffers
     this.dabs.dispose();
     this.presenter.dispose();
     this.compositor.dispose();
@@ -340,6 +437,8 @@ export class Engine implements StrokeSink {
     let newestInput = -1;
     const doc = documentStore.getState();
 
+    for (const [entry, capture] of this.captures) if (capture.ready()) entry.pending?.();
+
     // 1. New dabs into the stroke buffer: 'over' builds up flow where dabs overlap, 'max'
     //    (marker) never exceeds a single dab.
     const batch = this.batch;
@@ -386,7 +485,17 @@ export class Engine implements StrokeSink {
       const target = this.layers.get(stroke.layerId);
       if (r) {
         if (this.pending === 'commit' && target) {
+          const region = alignToTiles(this.tileIO.grid, r);
+          const capture = region ? this.tileIO.capture(target, region) : null;
           this.compositor.commitStroke(target, this.liveStroke(stroke), r);
+          if (capture) {
+            capture.after();
+            this.recordStroke(
+              stroke.mode === 'erase' ? 'Erase' : 'Stroke',
+              stroke.layerId,
+              capture,
+            );
+          }
           // A stroke whose layer stopped being active mid-stroke lands in a cached range.
           if (stroke.layerId !== doc.activeLayerId) this.compositor.invalidate();
         }
@@ -466,6 +575,7 @@ export class Engine implements StrokeSink {
     engineStats.frameCpuMs = ema(engineStats.frameCpuMs, end - start);
     engineStats.zoomPercent = this.view.scale * dpr * 100;
     engineStats.rotationDeg = (this.view.rotation * 180) / Math.PI;
+    if (this.captures.size > 0) this.requestFrame(); // keep polling the GPU readbacks
   };
 
   private feed(stroke: Stroke, s: InputSample, sink: (pt: Pt) => void) {
@@ -535,6 +645,13 @@ export class Engine implements StrokeSink {
 
   private onDocumentChange = (doc: DocumentState, prev: DocumentState) => {
     if (this.disposed || this.lost) return;
+    // Record before syncLayers frees the textures of deleted layers.
+    if (
+      this.suppressRecord === 0 &&
+      (doc.layers !== prev.layers || doc.background !== prev.background)
+    ) {
+      this.recordDocChange(prev, doc);
+    }
     if (doc.layers !== prev.layers) this.syncLayers(doc);
     if (
       doc.layers !== prev.layers ||
@@ -545,6 +662,127 @@ export class Engine implements StrokeSink {
       this.markDirty('all');
     }
   };
+
+  // ── History ─────────────────────────────────────────────────────────────────
+
+  private pushHistory(entry: HistoryEntry) {
+    this.history.push(entry);
+    clearTimeout(this.compressTimer);
+    this.compressTimer = setTimeout(() => void this.compressIdle(), COMPRESS_DELAY_MS);
+  }
+
+  /** Stroke tiles arrive a frame or two later, without stalling the GPU. */
+  private recordStroke(label: string, layerId: string, capture: Capture) {
+    const entry: HistoryEntry = { label, pixels: new Map(), time: performance.now(), bytes: 0 };
+    entry.pending = () => {
+      entry.pending = undefined;
+      this.captures.delete(entry);
+      const tiles = capture.finish();
+      if (tiles.size > 0) entry.pixels.set(layerId, tiles);
+      this.history.updateBytes(entry);
+    };
+    this.captures.set(entry, capture);
+    this.pushHistory(entry);
+  }
+
+  /** Metadata changes made directly on the store (layers panel): add, delete, move, properties. */
+  private recordDocChange(prev: DocumentState, doc: DocumentState) {
+    const { label, coalesceKey } = describeChange(prev, doc);
+    if (!label) return; // selection only
+    const pixels = new Map<string, LayerTiles>();
+    for (const l of prev.layers) {
+      const target = this.layers.get(l.id);
+      if (target && !doc.layers.some((n) => n.id === l.id)) {
+        pixels.set(l.id, TileIO.diff(this.tileIO.readAll(target), new Map()));
+      }
+    }
+    this.pushHistory({
+      label,
+      doc: { before: snapshot(prev), after: snapshot(doc) },
+      pixels,
+      coalesceKey,
+      time: performance.now(),
+      bytes: 0,
+    });
+  }
+
+  private enqueueHistory(direction: 'undo' | 'redo') {
+    this.historyQueue = this.historyQueue
+      .then(() => this.applyHistory(direction))
+      .catch((err: unknown) => console.error('Undo/redo failed', err));
+  }
+
+  private async applyHistory(direction: 'undo' | 'redo') {
+    this.history.flushPending();
+    const peek = () => (direction === 'undo' ? this.history.peekUndo() : this.history.peekRedo());
+    const entry = peek();
+    if (!entry || this.disposed) return;
+    const side = direction === 'undo' ? 'before' : 'after';
+
+    // Inflate compressed tiles first, then apply everything in one synchronous step.
+    const writes = new Map<string, Map<number, Uint8Array | null>>();
+    for (const [layerId, tiles] of entry.pixels) {
+      const out = new Map<number, Uint8Array | null>();
+      for (const [key, change] of tiles) out.set(key, await inflateTile(change[side]));
+      writes.set(layerId, out);
+    }
+    if (this.disposed || this.lost || peek() !== entry || this.stroke) return;
+
+    const doc = entry.doc?.[side];
+    if (doc)
+      this.withoutRecording(() => documentStore.setState({ ...doc, layers: [...doc.layers] }));
+    for (const [layerId, tiles] of writes) {
+      const target = this.layers.get(layerId);
+      if (target) this.tileIO.write(target, tiles);
+    }
+    if (direction === 'undo') this.history.stepBack();
+    else this.history.stepForward();
+    this.compositor.invalidate();
+    this.markDirty('all');
+    this.notice(`${direction === 'undo' ? 'Undo' : 'Redo'}: ${entry.label}`);
+  }
+
+  /** Deflates tiles of older steps once drawing pauses. */
+  private async compressIdle() {
+    for (const entry of this.history.compressible(KEEP_RAW_STEPS)) {
+      let changed = false;
+      for (const tiles of entry.pixels.values()) {
+        for (const change of tiles.values()) {
+          if (change.before instanceof Uint8Array) {
+            change.before = await compressTile(change.before);
+            changed = true;
+          }
+          if (change.after instanceof Uint8Array) {
+            change.after = await compressTile(change.after);
+            changed = true;
+          }
+          if (this.disposed) return;
+        }
+      }
+      if (changed) this.history.updateBytes(entry);
+    }
+  }
+
+  private publishHistory = () => {
+    const h = this.history;
+    historyStore.setState({
+      canUndo: h.canUndo,
+      canRedo: h.canRedo,
+      undoLabel: h.peekUndo()?.label ?? null,
+      redoLabel: h.peekRedo()?.label ?? null,
+    });
+    engineStats.historySteps = h.size;
+    engineStats.historyMB = h.totalBytes / (1024 * 1024);
+  };
+
+  private withoutRecording(fn: () => void) {
+    this.suppressRecord++;
+    try {
+      fn();
+    } finally {
+      this.suppressRecord--;
+    }
+  }
 
   private notice(message: string) {
     this.opts.onNotice?.(message);
@@ -602,6 +840,16 @@ export class Engine implements StrokeSink {
       case '0':
         this.view.fit(this.docW, this.docH, this.viewW, this.viewH);
         break;
+      case 'z':
+      case 'Z':
+        if (isEditable(e.target)) return;
+        if (e.shiftKey) this.redo();
+        else this.undo();
+        break;
+      case 'y':
+        if (isEditable(e.target)) return;
+        this.redo();
+        break;
       default:
         return;
     }
@@ -630,4 +878,53 @@ function backgroundColor(doc: DocumentState): Rgba | null {
   if (!doc.background.visible) return null;
   const [r, g, b] = parseHexColor(doc.background.color);
   return [r, g, b, 1];
+}
+
+function snapshot(doc: DocumentState): DocSnapshot {
+  return { layers: doc.layers, activeLayerId: doc.activeLayerId, background: doc.background };
+}
+
+const FIELD_LABELS: Partial<Record<keyof LayerMeta, string>> = {
+  name: 'Rename layer',
+  visible: 'Layer visibility',
+  opacity: 'Layer opacity',
+  blendMode: 'Blend mode',
+  locked: 'Lock layer',
+  alphaLocked: 'Alpha lock',
+};
+
+const changedKeys = <T extends object>(a: T, b: T) =>
+  (Object.keys(b) as (keyof T)[]).filter((k) => a[k] !== b[k]);
+
+/** A label for the change, and a key when repeats should merge (slider drags). */
+function describeChange(
+  prev: DocumentState,
+  doc: DocumentState,
+): { label: string | null; coalesceKey?: string } {
+  if (doc.background !== prev.background) {
+    const fields = changedKeys(prev.background, doc.background);
+    const key = fields.join() === 'color' ? 'background:color' : undefined;
+    return { label: 'Background', coalesceKey: key };
+  }
+  if (doc.layers === prev.layers) return { label: null };
+  if (doc.layers.length > prev.layers.length) return { label: 'Add layer' };
+  if (doc.layers.length < prev.layers.length) return { label: 'Delete layer' };
+  if (doc.layers.some((l, i) => l.id !== prev.layers[i]?.id)) return { label: 'Move layer' };
+  const changed = doc.layers.filter((l, i) => l !== prev.layers[i]);
+  const layer = changed[0];
+  const before = layer && prev.layers.find((p) => p.id === layer.id);
+  if (changed.length !== 1 || !layer || !before) return { label: 'Layers' };
+  const fields = changedKeys(before, layer);
+  return {
+    label: FIELD_LABELS[fields[0] ?? 'name'] ?? 'Layer',
+    coalesceKey: fields.join() === 'opacity' ? `opacity:${layer.id}` : undefined,
+  };
+}
+
+function isEditable(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLTextAreaElement ||
+    (target instanceof HTMLInputElement && !['range', 'checkbox', 'color'].includes(target.type)) ||
+    (target instanceof HTMLElement && target.isContentEditable)
+  );
 }
