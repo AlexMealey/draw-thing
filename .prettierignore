@@ -1,0 +1,6 @@
+dist
+dev-dist
+playwright-report
+test-results
+package-lock.json
+docs

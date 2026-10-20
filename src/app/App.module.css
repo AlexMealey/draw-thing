@@ -1,0 +1,36 @@
+.app {
+  position: fixed;
+  inset: 0;
+}
+
+/* The engine mounts its <canvas> here in Phase 1. */
+.canvasHost {
+  position: absolute;
+  inset: 0;
+  touch-action: none; /* no pan, zoom or pen flicks over the drawing surface */
+  contain: strict;
+  display: grid;
+  place-items: center;
+}
+
+.placeholder {
+  max-width: 28rem;
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+.placeholder h1 {
+  margin: 0 0 var(--space-2);
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.placeholder p {
+  margin: 0 0 var(--space-2);
+}
+
+.meta {
+  font-size: 13px;
+}
