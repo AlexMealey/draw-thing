@@ -5,3 +5,7 @@ dev-dist
 .vite
 playwright-report
 test-results
+
+# Deployment settings with real addresses stay local
+deploy/env/*.env
+!deploy/env/local.env

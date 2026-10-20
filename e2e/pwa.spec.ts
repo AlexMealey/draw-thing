@@ -36,5 +36,5 @@ test('loads offline once the service worker is installed', async ({ page, contex
 
   await context.setOffline(true);
   await page.reload();
-  await expect(page.getByRole('heading', { name: 'DrawThing' })).toBeVisible();
+  await expect(page.getByLabel('Drawing canvas')).toBeVisible();
 });

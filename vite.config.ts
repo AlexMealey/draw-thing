@@ -5,10 +5,19 @@ import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { remoteLog } from './tools/vite-plugin-remote-log.ts';
 
-// HTTPS=1 serves a self-signed cert on all interfaces, for LAN testing on tablets.
-// Pointer Events work over it, but iOS refuses service workers on untrusted certs:
-// use a tunnel for install/offline testing (see README).
-const https = process.env.HTTPS === '1';
+// All of these are set by compose.yaml; the defaults suit running Vite directly.
+const env = process.env;
+// HTTPS=1 serves a self-signed cert, for pen testing over the LAN. iOS refuses service
+// workers on untrusted certs: test install/offline with the LAN deployment (see README).
+const https = env.HTTPS === '1';
+// The dev image sets VITE_HOST=0.0.0.0 so the server is reachable from outside the container.
+const host = env.VITE_HOST || https || undefined;
+// Extra Host names to accept (e.g. a tunnel), comma-separated, or "all".
+const allowedHosts =
+  env.VITE_ALLOWED_HOSTS === 'all' ? true : env.VITE_ALLOWED_HOSTS?.split(',').filter(Boolean);
+// Polling is only needed when the source lives on a filesystem without inotify events
+// (e.g. a Windows drive bind-mounted into a container).
+const watch = env.VITE_USE_POLLING === '1' ? { usePolling: true, interval: 300 } : undefined;
 
 export default defineConfig({
   plugins: [
@@ -42,8 +51,8 @@ export default defineConfig({
       },
     }),
   ],
-  server: { host: https || undefined },
-  preview: { host: https || undefined },
+  server: { host, allowedHosts, watch, strictPort: true },
+  preview: { host, allowedHosts, strictPort: true },
   test: {
     include: ['src/**/*.test.ts'],
   },

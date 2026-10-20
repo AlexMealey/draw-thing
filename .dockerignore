@@ -1,0 +1,11 @@
+node_modules
+dist
+dev-dist
+playwright-report
+test-results
+.git
+.vite
+*.local
+deploy/env
+docs
+README.md

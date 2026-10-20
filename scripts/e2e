@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+# Playwright end-to-end tests in the official Playwright image (browsers + system libraries).
+# Extra arguments go to `playwright test`, e.g. ./scripts/e2e --grep offline
+set -e
+cd "$(dirname "$0")/.."
+# Pre-create the bind-mounted output folders so Docker doesn't create them as root.
+mkdir -p playwright-report test-results
+exec docker compose run --rm --build e2e npx playwright test "$@"

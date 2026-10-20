@@ -1,0 +1,68 @@
+# DrawThing containers. The host needs only Docker; npm runs in here.
+#
+#   docker compose up dev                                   dev server with hot reload
+#   ./scripts/dnpm run check                                any npm command, in the dev image
+#   docker compose --env-file deploy/env/local.env up -d app   deploy (local / lan / cloud env file)
+#   ./scripts/e2e                                           Playwright end-to-end tests
+#
+# See README.md for the LAN and cloud setups.
+name: drawthing
+
+services:
+  dev:
+    profiles: [dev]
+    build:
+      context: .
+      target: dev
+    image: drawthing-dev
+    init: true
+    ports:
+      # 127.0.0.1 by default; DEV_BIND=0.0.0.0 exposes the dev server to the LAN.
+      - '${DEV_BIND:-127.0.0.1}:${DEV_PORT:-5173}:5173'
+      - '${DEV_BIND:-127.0.0.1}:${PREVIEW_PORT:-4173}:4173'
+    environment:
+      HTTPS: ${DEV_HTTPS:-0}
+      VITE_ALLOWED_HOSTS: ${VITE_ALLOWED_HOSTS:-}
+      VITE_USE_POLLING: ${VITE_USE_POLLING:-0}
+    volumes:
+      - .:/app
+      # Container-owned dependencies; never mixed with anything on the host.
+      - node_modules:/app/node_modules
+
+  app:
+    build:
+      context: .
+      target: runtime
+    image: ${APP_IMAGE:-drawthing}
+    restart: unless-stopped
+    ports:
+      - '${APP_BIND:-127.0.0.1}:${APP_HTTP_PORT:-8080}:80'
+      - '${APP_BIND:-127.0.0.1}:${APP_HTTPS_PORT:-8443}:443'
+      - '${APP_BIND:-127.0.0.1}:${APP_HTTPS_PORT:-8443}:443/udp'
+      # The LAN CA download is only exposed when APP_CA_BIND=0.0.0.0 (LAN mode).
+      - '${APP_CA_BIND:-127.0.0.1}:${APP_CA_PORT:-8081}:8081'
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      CADDY_TLS: ${CADDY_TLS:-}
+      CADDY_DEFAULT_SNI: ${CADDY_DEFAULT_SNI:-localhost}
+    volumes:
+      - caddy_data:/data # certificates and the LAN CA: keep across restarts
+      - caddy_config:/config
+
+  e2e:
+    profiles: [test]
+    build:
+      context: .
+      target: e2e
+    image: drawthing-e2e
+    init: true
+    ipc: host # Chromium needs more shared memory than Docker's default
+    # Run via ./scripts/e2e, which creates these folders first so they aren't root-owned.
+    volumes:
+      - ./playwright-report:/app/playwright-report
+      - ./test-results:/app/test-results
+
+volumes:
+  node_modules:
+  caddy_data:
+  caddy_config:

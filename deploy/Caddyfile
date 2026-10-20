@@ -1,0 +1,50 @@
+# Serves the built DrawThing PWA. The deployment mode is chosen by environment variables
+# (see deploy/env/*.env and README.md):
+#
+#   SITE_ADDRESS=:80                 same system (http://localhost is a secure context), or
+#                                    behind a cloud platform that terminates TLS (use its port)
+#   SITE_ADDRESS=192.168.1.50        LAN: HTTPS with Caddy's internal CA (CADDY_TLS="tls internal")
+#   SITE_ADDRESS=draw.example.com    cloud VM: automatic Let's Encrypt certificate
+
+{
+	admin off
+	# Clients connecting to a bare IP send no SNI; tell Caddy which certificate to use then.
+	default_sni {$CADDY_DEFAULT_SNI:localhost}
+}
+
+{$SITE_ADDRESS::80} {
+	{$CADDY_TLS}
+
+	root * /srv
+	encode zstd gzip
+
+	# The service worker, manifest and app shell must be revalidated so updates are found.
+	@revalidate path / /index.html /sw.js /manifest.webmanifest
+	header @revalidate Cache-Control "no-cache"
+	# Vite's content-hashed bundles never change.
+	@hashed path /assets/*
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	}
+
+	try_files {path} /index.html
+	file_server
+}
+
+# LAN mode: hands out the internal root CA over plain HTTP, so tablets can trust it once.
+http://:8081 {
+	handle /ca.crt {
+		root * /data/caddy/pki/authorities/local
+		rewrite * /root.crt
+		header Content-Type application/x-x509-ca-cert
+		header Content-Disposition "attachment; filename=drawthing-local-ca.crt"
+		file_server
+	}
+	handle {
+		respond "Download /ca.crt to trust this DrawThing server's local certificate authority." 404
+	}
+}
