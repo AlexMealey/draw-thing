@@ -19,8 +19,9 @@ interface Props {
   onAdjust: (adjust: BrushAdjustments) => void;
   onColor: (color: string) => void;
   onEraser: (eraser: boolean) => void;
+  layersOpen: boolean;
+  onLayers: () => void;
   onFit: () => void;
-  onClear: () => void;
 }
 
 /** Temporary controls for testing the engine; replaced by the real UI in Phase 5. */
@@ -88,11 +89,11 @@ export function DevToolbar(props: Props) {
         >
           Eraser
         </button>
+        <button className={styles.button} aria-pressed={props.layersOpen} onClick={props.onLayers}>
+          Layers
+        </button>
         <button className={styles.button} onClick={props.onFit}>
           Fit
-        </button>
-        <button className={styles.button} onClick={props.onClear}>
-          Clear
         </button>
       </div>
     </div>

@@ -16,6 +16,10 @@ export const engineStats = {
   desynchronized: false,
   /** Stroke buffer format: rgba16f avoids banding in low-flow buildup. */
   strokeFormat: '',
+  layers: 0,
+  maxLayers: 0,
+  /** Estimated GPU memory for layers, caches and the stroke buffer. */
+  gpuMB: 0,
 };
 
 export const ema = (prev: number, next: number, k = 0.2) =>

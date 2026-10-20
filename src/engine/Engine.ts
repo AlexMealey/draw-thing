@@ -1,6 +1,7 @@
+import { activeIndex, documentStore, type DocumentState, makeLayer } from '../state/documentStore';
 import { parseHexColor } from './brush/color';
 import { DabGenerator } from './brush/DabGenerator';
-import { DEFAULT_PRESET_ID, presetById, type BrushPreset } from './brush/presets';
+import { type BrushPreset, DEFAULT_PRESET_ID, presetById } from './brush/presets';
 import { Stabilizer } from './brush/Stabilizer';
 import { type Pt, StrokePath } from './brush/StrokePath';
 import type { ToolSettings } from './brush/tool';
@@ -8,27 +9,38 @@ import { createGL, isDesynchronized } from './gl/context';
 import { createTarget, deleteTarget, type Rect, strokeFormat, type Target } from './gl/target';
 import { GestureRecognizer } from './input/GestureRecognizer';
 import { type InputSample, PointerInput, type StrokeSink } from './input/PointerInput';
+import { gpuBudgetBytes, maxLayersFor } from './layers/budget';
+import {
+  Compositor,
+  type GpuLayer,
+  type LiveStroke,
+  type Rgba,
+  type StrokeMode,
+} from './layers/Compositor';
 import { type Affine, identity, multiply, toMat3 } from './math/affine';
 import { clampRect, DabBatch, unionRect } from './render/DabBatch';
 import { DabRenderer } from './render/DabRenderer';
-import { Presenter, targetClip } from './render/Presenter';
+import { Presenter } from './render/Presenter';
+import { QuadPass, targetClip } from './render/QuadPass';
 import { ema, engineStats } from './stats';
 import { ViewTransform } from './view/ViewTransform';
 
 export interface EngineOptions {
   /** Multi-finger tap: 2 = undo, 3 = redo, 4 = toggle UI. */
   onTap?: (fingers: number) => void;
+  /** Short user-facing message, e.g. why a stroke was refused. */
+  onNotice?: (message: string) => void;
   onContextLost?: () => void;
 }
 
 const MAX_DOC_SIZE = 4096;
-const PAPER = [1, 1, 1] as const;
 const SURROUND = [0.173, 0.173, 0.18, 1] as const;
 const CURSOR_RING = [0.38, 0.38, 0.38, 0.85] as const; // premultiplied mid-gray: visible on light and dark
 const KEY_ZOOM = 1.25;
 
 /** One in-progress stroke: its own copy of the tool settings and pipeline state. */
 interface Stroke {
+  layerId: string;
   preset: BrushPreset;
   stabilizer: Stabilizer;
   path: StrokePath;
@@ -36,20 +48,23 @@ interface Stroke {
   /** Premultiplied; white for erase strokes, which only use coverage. */
   color: [number, number, number, number];
   opacity: number;
-  erase: boolean;
+  mode: StrokeMode;
   /** Prediction contradicts smoothing, so it's only used with StreamLine off. */
   predict: boolean;
   bounds: Rect | null;
 }
 
 /**
- * The drawing engine: owns the WebGL2 context, document textures, view transform and input,
- * and renders on demand in a requestAnimationFrame loop. No React in here.
+ * The drawing engine: owns the WebGL2 context, layer textures, view transform and input, and
+ * renders on demand in a requestAnimationFrame loop. No React in here.
  *
- * Document model so far: one raster layer plus a stroke buffer. A stroke deposits dabs into the
- * stroke buffer (flow builds up there), the present pass previews it at the stroke's opacity, and
- * on pen-up it is merged into the layer at that opacity. A finger stroke that turns into a pinch
- * is discarded cleanly.
+ * Layer metadata lives in `documentStore` (Zustand); the engine mirrors it with one GPU texture
+ * per layer and recomposites when it changes. Pixel operations (strokes, clear, merge, flatten)
+ * go through the engine.
+ *
+ * A stroke deposits dabs into the stroke buffer (flow builds up there); the compositor previews
+ * it on the active layer at the stroke's opacity, and on pen-up merges it into the layer. A finger
+ * stroke that turns into a pinch is discarded cleanly.
  *
  * Stroke pipeline per sample: Stabilizer (StreamLine + pressure smoothing) → StrokePath
  * (midpoint quadratic, arc-length spacing) → DabGenerator (pressure curves, tilt, jitter) →
@@ -60,14 +75,17 @@ export class Engine implements StrokeSink {
   readonly docH: number;
 
   private gl: WebGL2RenderingContext;
-  private layer: Target;
+  private layers = new Map<string, Target>();
   private strokeBuf: Target;
+  private quad: QuadPass;
+  private compositor: Compositor;
   private dabs: DabRenderer;
   private presenter: Presenter;
   private view = new ViewTransform();
   private input: PointerInput;
   private ro: ResizeObserver;
   private ac = new AbortController();
+  private unsubscribe: () => void;
 
   private viewW: number;
   private viewH: number;
@@ -90,6 +108,8 @@ export class Engine implements StrokeSink {
   private queue: InputSample[] = [];
   private predicted: InputSample[] = [];
   private hoverSample: InputSample | null = null;
+  /** Document area that needs recompositing: a rect, everything, or nothing. */
+  private docDirty: Rect | 'all' | null = 'all';
 
   private batch = new DabBatch();
   private overlay = new DabBatch();
@@ -106,16 +126,22 @@ export class Engine implements StrokeSink {
     this.viewW = rect.width || innerWidth;
     this.viewH = rect.height || innerHeight;
 
-    // Phase 1: a "screen size" canvas, like Procreate's default.
+    // A "screen size" canvas, like Procreate's default. Canvas sizes arrive with the gallery.
     const dpr = devicePixelRatio || 1;
     const cap = Math.min(MAX_DOC_SIZE, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number);
     this.docW = Math.min(cap, Math.round(this.viewW * dpr));
     this.docH = Math.min(cap, Math.round(this.viewH * dpr));
-    this.layer = createTarget(gl, this.docW, this.docH);
     this.strokeBuf = createTarget(gl, this.docW, this.docH, strokeFormat(gl));
-    this.fboClip = targetClip(this.layer);
+    this.fboClip = targetClip(this.strokeBuf);
+    this.quad = new QuadPass(gl);
+    this.compositor = new Compositor(gl, this.quad, this.docW, this.docH);
     this.dabs = new DabRenderer(gl);
-    this.presenter = new Presenter(gl);
+    this.presenter = new Presenter(gl, this.quad);
+
+    const maxLayers = maxLayersFor(this.docW * this.docH * 4, gpuBudgetBytes());
+    documentStore.getState().reset({ width: this.docW, height: this.docH, maxLayers });
+    this.syncLayers(documentStore.getState());
+    this.unsubscribe = documentStore.subscribe(this.onDocumentChange);
 
     canvas.width = Math.round(this.viewW * dpr);
     canvas.height = Math.round(this.viewH * dpr);
@@ -153,6 +179,7 @@ export class Engine implements StrokeSink {
     engineStats.docSize = `${this.docW}×${this.docH}`;
     engineStats.desynchronized = isDesynchronized(gl);
     engineStats.strokeFormat = this.strokeBuf.format;
+    engineStats.maxLayers = maxLayers;
     this.requestFrame();
   }
 
@@ -169,14 +196,55 @@ export class Engine implements StrokeSink {
     this.requestFrame();
   }
 
-  clear() {
-    this.presenter.clear(this.layer, null);
-    this.requestFrame();
+  /** Clears the active layer. */
+  clearLayer() {
+    const doc = documentStore.getState();
+    const meta = doc.layers[activeIndex(doc)];
+    const target = meta && this.layers.get(meta.id);
+    if (!meta || !target || this.stroke) return;
+    if (meta.locked) return this.notice(`${meta.name} is locked`);
+    this.compositor.clearTarget(target, null);
+    this.markDirty('all');
+  }
+
+  /**
+   * Merges the active layer into the one below it. The lower layer's opacity is baked into its
+   * pixels first, so the merge doesn't change how the picture looks; it keeps its blend mode.
+   */
+  mergeDown() {
+    const doc = documentStore.getState();
+    const i = activeIndex(doc);
+    const upper = doc.layers[i];
+    const lower = doc.layers[i - 1];
+    if (!upper || !lower) return this.notice('There’s no layer below to merge into');
+    const src = this.layers.get(upper.id);
+    const dst = this.layers.get(lower.id);
+    if (!src || !dst || this.stroke) return;
+    const merged = createTarget(this.gl, this.docW, this.docH);
+    this.compositor.blendLayer(merged, dst, lower.opacity, 'normal', null);
+    if (upper.visible)
+      this.compositor.blendLayer(merged, src, upper.opacity, upper.blendMode, null);
+    deleteTarget(this.gl, dst);
+    this.layers.set(lower.id, merged);
+    doc.updateLayer(lower.id, { opacity: 1 });
+    doc.removeLayer(upper.id); // selects `lower`; syncLayers frees `src`
+  }
+
+  /** Composites all visible layers into a single new layer. Hidden layers are discarded. */
+  flatten() {
+    const doc = documentStore.getState();
+    if (this.stroke || doc.layers.length < 2) return;
+    const target = createTarget(this.gl, this.docW, this.docH);
+    this.compositor.flattenInto(this.gpuLayers(doc), target, null);
+    const layer = makeLayer('Flattened');
+    this.layers.set(layer.id, target); // registered before the store change, so it's kept
+    doc.replaceLayers([layer], layer.id);
   }
 
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
+    this.unsubscribe();
     this.input.dispose();
     this.ro.disconnect();
     this.ac.abort();
@@ -185,7 +253,10 @@ export class Engine implements StrokeSink {
     // No loseContext(): under StrictMode a new Engine reuses this canvas's context.
     this.dabs.dispose();
     this.presenter.dispose();
-    deleteTarget(this.gl, this.layer);
+    this.compositor.dispose();
+    this.quad.dispose();
+    for (const t of this.layers.values()) deleteTarget(this.gl, t);
+    this.layers.clear();
     deleteTarget(this.gl, this.strokeBuf);
   }
 
@@ -193,18 +264,26 @@ export class Engine implements StrokeSink {
 
   begin(s: InputSample, opts: { pointerType: string; eraser: boolean }) {
     if (this.pending) this.renderNow(); // pen lifted and touched down within one frame
+    const doc = documentStore.getState();
+    const layer = doc.layers[activeIndex(doc)];
+    if (!layer) return;
+    if (layer.locked) return this.notice(`${layer.name} is locked`);
+    if (!layer.visible) return this.notice(`${layer.name} is hidden`);
+
     const { preset, size, opacity, smoothing, color, eraser } = this.tool;
     const erase = eraser || opts.eraser;
     const [r, g, b] = parseHexColor(color);
     const dabs = new DabGenerator(preset, size, this.strokeSeed++);
     this.stroke = {
+      layerId: layer.id,
       preset,
       stabilizer: new Stabilizer(smoothing),
       path: new StrokePath(dabs.spacingAt),
       dabs,
       color: erase ? [1, 1, 1, 1] : [r, g, b, 1],
       opacity: Math.min(1, Math.max(0, opacity)),
-      erase,
+      // Alpha lock keeps the layer's alpha: paint lands inside existing pixels; erasing still erases.
+      mode: erase ? 'erase' : layer.alphaLocked ? 'inside' : 'paint',
       predict: smoothing === 0,
       bounds: null,
     };
@@ -259,6 +338,7 @@ export class Engine implements StrokeSink {
     const gl = this.gl;
     const start = performance.now();
     let newestInput = -1;
+    const doc = documentStore.getState();
 
     // 1. New dabs into the stroke buffer: 'over' builds up flow where dabs overlap, 'max'
     //    (marker) never exceeds a single dab.
@@ -295,17 +375,23 @@ export class Engine implements StrokeSink {
       });
       gl.blendEquation(gl.FUNC_ADD);
       gl.disable(gl.BLEND);
-      stroke.bounds = unionRect(stroke.bounds, batch.bounds());
+      const bounds = batch.bounds();
+      stroke.bounds = unionRect(stroke.bounds, bounds);
+      this.markDirty(bounds);
     }
 
-    // 2. Pen-up merges the stroke into the layer at its opacity; a cancelled stroke just goes.
+    // 2. Pen-up merges the stroke into its layer; a cancelled stroke just goes away.
     if (stroke && this.pending) {
       const r = stroke.bounds && clampRect(stroke.bounds, this.docW, this.docH);
+      const target = this.layers.get(stroke.layerId);
       if (r) {
-        if (this.pending === 'commit') {
-          this.presenter.merge(this.strokeBuf, this.layer, r, stroke.erase, stroke.opacity);
+        if (this.pending === 'commit' && target) {
+          this.compositor.commitStroke(target, this.liveStroke(stroke), r);
+          // A stroke whose layer stopped being active mid-stroke lands in a cached range.
+          if (stroke.layerId !== doc.activeLayerId) this.compositor.invalidate();
         }
-        this.presenter.clear(this.strokeBuf, r);
+        this.compositor.clearTarget(this.strokeBuf, r);
+        this.markDirty(stroke.layerId === doc.activeLayerId ? r : 'all');
       }
       this.stroke = null;
       this.pending = null;
@@ -313,32 +399,45 @@ export class Engine implements StrokeSink {
     }
     const live = this.stroke;
 
-    // 3. Present: paper + layer + live stroke, through the view transform.
+    // 3. Recomposite whatever changed in the document.
+    if (this.docDirty) {
+      const rect = this.docDirty === 'all' ? null : clampRect(this.docDirty, this.docW, this.docH);
+      if (this.docDirty === 'all' || rect) {
+        const showStroke = live?.layerId === doc.activeLayerId;
+        this.compositor.render(
+          this.gpuLayers(doc),
+          activeIndex(doc),
+          backgroundColor(doc),
+          live && showStroke ? this.liveStroke(live) : null,
+          rect,
+        );
+      }
+      this.docDirty = null;
+    }
+
+    // 4. Present the document through the view transform.
     const dpr = devicePixelRatio || 1;
     const docToClip = toMat3(
       multiply(viewToClip(this.viewW, this.viewH), this.view.docToView),
       this.screenClip,
     );
     this.presenter.draw({
-      layer: this.layer,
-      stroke: this.strokeBuf,
-      strokeOpacity: live?.opacity ?? 1,
-      erase: live?.erase ?? false,
+      image: this.compositor.output,
       docToClip,
-      paper: PAPER,
       surround: SURROUND,
       nearest: this.view.scale * dpr >= 3,
       width: this.canvas.width,
       height: this.canvas.height,
     });
 
-    // 4. Screen-only overlays, gone next frame: the not-yet-committed tail of the stroke plus
-    //    predicted points (hides latency), and the brush cursor ring.
+    // 5. Screen-only overlays, gone next frame: the not-yet-committed tail of the stroke plus
+    //    predicted points (hides latency), and the brush cursor ring. The tail is drawn on top
+    //    of everything, so it's skipped where that would look wrong.
     const overlay = this.overlay;
     const screenAA = 1 / this.view.scale; // 1 CSS px in document units
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-    if (live && !live.erase) {
+    if (live && this.canPreviewOnTop(live, doc)) {
       overlay.clear();
       const saved = live.dabs.save();
       const predicted = live.predict ? this.predicted : [];
@@ -381,6 +480,75 @@ export class Engine implements StrokeSink {
   private emitOverlay = (pt: Pt) => {
     this.stroke?.dabs.emit(pt, this.overlay);
   };
+
+  private liveStroke(stroke: Stroke): LiveStroke {
+    return { target: this.strokeBuf, opacity: stroke.opacity, mode: stroke.mode };
+  }
+
+  /** The tail overlay is plain source-over on top of the final image. */
+  private canPreviewOnTop(stroke: Stroke, doc: DocumentState): boolean {
+    if (stroke.mode !== 'paint' || stroke.layerId !== doc.activeLayerId) return false;
+    const i = activeIndex(doc);
+    const layer = doc.layers[i];
+    return (
+      layer?.blendMode === 'normal' &&
+      layer.opacity === 1 &&
+      !doc.layers.slice(i + 1).some((l) => l.visible && l.opacity > 0)
+    );
+  }
+
+  private markDirty(r: Rect | null | 'all') {
+    if (r === null || this.docDirty === 'all') return;
+    this.docDirty = r === 'all' ? 'all' : unionRect(this.docDirty, r);
+    this.requestFrame();
+  }
+
+  // ── Document store sync ─────────────────────────────────────────────────────
+
+  private gpuLayers(doc: DocumentState): GpuLayer[] {
+    const out: GpuLayer[] = [];
+    for (const meta of doc.layers) {
+      const target = this.layers.get(meta.id);
+      if (target) out.push({ ...meta, target });
+    }
+    return out;
+  }
+
+  /** Creates textures for new layers and frees those of removed ones. */
+  private syncLayers(doc: DocumentState) {
+    const ids = new Set(doc.layers.map((l) => l.id));
+    for (const [id, target] of this.layers) {
+      if (!ids.has(id)) {
+        deleteTarget(this.gl, target);
+        this.layers.delete(id);
+      }
+    }
+    for (const id of ids) {
+      if (!this.layers.has(id)) this.layers.set(id, createTarget(this.gl, this.docW, this.docH));
+    }
+    engineStats.layers = this.layers.size;
+    const layerMB = (this.docW * this.docH * 4) / (1024 * 1024);
+    engineStats.gpuMB = Math.round(
+      layerMB * (this.layers.size + 5) + layerMB * (this.strokeBuf.format === 'rgba16f' ? 2 : 1),
+    );
+  }
+
+  private onDocumentChange = (doc: DocumentState, prev: DocumentState) => {
+    if (this.disposed || this.lost) return;
+    if (doc.layers !== prev.layers) this.syncLayers(doc);
+    if (
+      doc.layers !== prev.layers ||
+      doc.activeLayerId !== prev.activeLayerId ||
+      doc.background !== prev.background
+    ) {
+      this.compositor.invalidate();
+      this.markDirty('all');
+    }
+  };
+
+  private notice(message: string) {
+    this.opts.onNotice?.(message);
+  }
 
   // ── Environment events ──────────────────────────────────────────────────────
 
@@ -456,4 +624,10 @@ const toPt = (s: InputSample): Pt => ({ x: s.x, y: s.y, p: s.pressure });
 /** View CSS px (y down) → clip space of the default framebuffer (y up). */
 function viewToClip(w: number, h: number): Affine {
   return { a: 2 / w, b: 0, c: 0, d: -2 / h, e: -1, f: 1 };
+}
+
+function backgroundColor(doc: DocumentState): Rgba | null {
+  if (!doc.background.visible) return null;
+  const [r, g, b] = parseHexColor(doc.background.color);
+  return [r, g, b, 1];
 }

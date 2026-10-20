@@ -85,19 +85,51 @@ void main() {
   o = texture(u_src, v_uv) * u_opacity;
 }`;
 
-/** Paper + layer + in-progress stroke (painted over, or erasing) → opaque screen pixel. */
+/**
+ * Layer blend modes (W3C Compositing Level 1 separable modes) on premultiplied inputs.
+ * `u_dst` is a snapshot of the backdrop; the result replaces it.
+ */
+export const BLEND_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+uniform sampler2D u_dst;
+uniform float u_opacity;
+uniform int u_mode;
+out vec4 o;
+
+vec3 B(vec3 b, vec3 s) {
+  switch (u_mode) {
+    case 1: return b * s;                                                              // multiply
+    case 2: return b + s - b * s;                                                      // screen
+    case 3: return mix(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(0.5, b));  // overlay
+    case 4: return min(b, s);                                                          // darken
+    case 5: return max(b, s);                                                          // lighten
+    case 6: return mix(min(vec3(1.0), b / max(1.0 - s, vec3(1e-5))), vec3(0.0), step(b, vec3(0.0)));   // color-dodge
+    case 7: return mix(1.0 - min(vec3(1.0), (1.0 - b) / max(s, vec3(1e-5))), vec3(1.0), step(1.0, b)); // color-burn
+    case 8: return min(b + s, vec3(1.0));                                              // add
+    default: return s;
+  }
+}
+
+void main() {
+  vec4 s = texture(u_src, v_uv) * u_opacity;
+  vec4 d = texture(u_dst, v_uv);
+  vec3 Cs = s.a > 0.0 ? s.rgb / s.a : vec3(0.0);
+  vec3 Cb = d.a > 0.0 ? d.rgb / d.a : vec3(0.0);
+  vec3 co = s.rgb * (1.0 - d.a) + d.rgb * (1.0 - s.a) + s.a * d.a * B(Cb, Cs);
+  o = vec4(co, s.a + d.a * (1.0 - s.a));
+}`;
+
+/** The composited document → screen. Transparent areas (background hidden) show a checkerboard. */
 export const PRESENT_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
-uniform sampler2D u_layer;
-uniform sampler2D u_stroke;
-uniform float u_strokeOpacity;
-uniform bool u_erase;
-uniform vec3 u_paper;
+uniform sampler2D u_image;
 out vec4 o;
 void main() {
-  vec4 layer = texture(u_layer, v_uv);
-  vec4 s = texture(u_stroke, v_uv) * u_strokeOpacity;
-  vec4 c = u_erase ? layer * (1.0 - s.a) : s + layer * (1.0 - s.a);
-  o = vec4(c.rgb + u_paper * (1.0 - c.a), 1.0);
+  vec4 c = texture(u_image, v_uv);
+  float k = mod(floor(gl_FragCoord.x / 12.0) + floor(gl_FragCoord.y / 12.0), 2.0);
+  vec3 checker = mix(vec3(1.0), vec3(0.82), k);
+  o = vec4(c.rgb + checker * (1.0 - c.a), 1.0);
 }`;

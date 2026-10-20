@@ -749,6 +749,8 @@ void main() {
 
 - **Export flatten:** free the `below`, `above` and `preview` caches first, which releases three doc-sized textures. Reuse one as the flatten target and call `flattenInto()`. Read it back in **512-row strips** via PBO into a single `Uint8ClampedArray`, so there's exactly one CPU copy and no per-layer canvases. Transfer it zero-copy to the export worker. Rebuild the caches afterwards.
 - **Flatten / Merge Down commands** reduce live GPU memory. Each is a single `merge` history entry that stores the merged layers' tiles, so the operation can be undone.
+- **Merge Down keeps the picture unchanged.** The lower layer's opacity is baked into its pixels before the upper layer is blended in with its own opacity and mode. The merged layer then sits at 100% opacity and keeps the lower layer's blend mode.
+- **Flatten discards hidden layers**, like Photoshop's flatten.
 - **Hidden-layer eviction** (stretch goal): layers that stay hidden for a while can be dropped from the GPU and lazily re-uploaded from IndexedDB tiles.
 
 ### 4.4 Memory budget (enforce in the MVP)

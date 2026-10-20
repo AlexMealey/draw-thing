@@ -8,21 +8,22 @@ interface Props {
   tool: ToolSettings;
   onEngine: (engine: Engine | null) => void;
   onTap: (fingers: number) => void;
+  onNotice: (message: string) => void;
 }
 
 /**
  * Hosts the drawing canvas. The Engine is created once per mount and renders on its own;
  * React only forwards settings and never re-renders during a stroke.
  */
-export function CanvasViewport({ tool, onEngine, onTap }: Props) {
+export function CanvasViewport({ tool, onEngine, onTap, onNotice }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<Engine | null>(null);
-  const callbacks = useRef({ onEngine, onTap });
+  const callbacks = useRef({ onEngine, onTap, onNotice });
   const [supported] = useState(hasWebGL2);
   const [contextLost, setContextLost] = useState(false);
 
   useEffect(() => {
-    callbacks.current = { onEngine, onTap };
+    callbacks.current = { onEngine, onTap, onNotice };
   });
 
   useEffect(() => {
@@ -30,6 +31,7 @@ export function CanvasViewport({ tool, onEngine, onTap }: Props) {
     if (!canvas) return;
     const engine = new Engine(canvas, {
       onTap: (fingers) => callbacks.current.onTap(fingers),
+      onNotice: (message) => callbacks.current.onNotice(message),
       onContextLost: () => setContextLost(true),
     });
     engineRef.current = engine;

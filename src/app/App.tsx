@@ -6,6 +6,8 @@ import type { Engine } from '../engine/Engine';
 import styles from './App.module.css';
 import { CanvasViewport } from './CanvasViewport';
 import { type BrushAdjustments, DevToolbar } from './DevToolbar';
+import { LayersPanel } from './LayersPanel';
+import { Toast } from './Toast';
 import { UpdatePrompt } from './UpdatePrompt';
 
 const defaultsFor = (p: BrushPreset): BrushAdjustments => ({
@@ -25,6 +27,10 @@ export function App({ debug }: { debug: boolean }) {
   const [color, setColor] = useState('#1c1c1e');
   const [eraser, setEraser] = useState(false);
   const [uiHidden, setUiHidden] = useState(false);
+  const [layersOpen, setLayersOpen] = useState(true);
+  const [notice, setNotice] = useState<string | null>(null);
+  const clearNotice = useCallback(() => setNotice(null), []);
+  const getEngine = useCallback(() => engineRef.current, []);
 
   const preset = presetById(presetId);
   const adjust = adjustments[preset.id] ?? defaultsFor(preset);
@@ -46,7 +52,7 @@ export function App({ debug }: { debug: boolean }) {
   return (
     <div className={styles.app}>
       <main className={styles.canvasHost} aria-label="Canvas">
-        <CanvasViewport tool={tool} onEngine={onEngine} onTap={onTap} />
+        <CanvasViewport tool={tool} onEngine={onEngine} onTap={onTap} onNotice={setNotice} />
       </main>
       {!uiHidden && (
         <DevToolbar
@@ -62,10 +68,13 @@ export function App({ debug }: { debug: boolean }) {
             setEraser(false);
           }}
           onEraser={setEraser}
+          layersOpen={layersOpen}
+          onLayers={() => setLayersOpen((open) => !open)}
           onFit={() => engineRef.current?.fitToScreen()}
-          onClear={() => engineRef.current?.clear()}
         />
       )}
+      {!uiHidden && layersOpen && <LayersPanel engine={getEngine} onNotice={setNotice} />}
+      {notice && <Toast message={notice} onDone={clearNotice} />}
       <UpdatePrompt />
       {debug && <DebugHud />}
     </div>
