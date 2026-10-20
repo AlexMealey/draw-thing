@@ -1,16 +1,37 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { DebugHud } from '../debug/DebugHud';
-import type { BrushSettings } from '../engine/brush/RoundBrush';
+import { type BrushPreset, DEFAULT_PRESET_ID, PRESETS, presetById } from '../engine/brush/presets';
+import type { ToolSettings } from '../engine/brush/tool';
 import type { Engine } from '../engine/Engine';
 import styles from './App.module.css';
 import { CanvasViewport } from './CanvasViewport';
-import { DevToolbar } from './DevToolbar';
+import { type BrushAdjustments, DevToolbar } from './DevToolbar';
 import { UpdatePrompt } from './UpdatePrompt';
+
+const defaultsFor = (p: BrushPreset): BrushAdjustments => ({
+  size: p.size.default,
+  opacity: p.opacity,
+  smoothing: p.stabilization,
+});
+
+/** Size, opacity and smoothing are remembered per brush, like Procreate. */
+const initialAdjustments = (): Record<string, BrushAdjustments> =>
+  Object.fromEntries(PRESETS.map((p) => [p.id, defaultsFor(p)]));
 
 export function App({ debug }: { debug: boolean }) {
   const engineRef = useRef<Engine | null>(null);
-  const [brush, setBrush] = useState<BrushSettings>({ size: 12, color: '#1c1c1e', eraser: false });
+  const [presetId, setPresetId] = useState(DEFAULT_PRESET_ID);
+  const [adjustments, setAdjustments] = useState(initialAdjustments);
+  const [color, setColor] = useState('#1c1c1e');
+  const [eraser, setEraser] = useState(false);
   const [uiHidden, setUiHidden] = useState(false);
+
+  const preset = presetById(presetId);
+  const adjust = adjustments[preset.id] ?? defaultsFor(preset);
+  const tool = useMemo<ToolSettings>(
+    () => ({ preset, ...adjust, color, eraser }),
+    [preset, adjust, color, eraser],
+  );
 
   const onEngine = useCallback((engine: Engine | null) => {
     engineRef.current = engine;
@@ -25,12 +46,22 @@ export function App({ debug }: { debug: boolean }) {
   return (
     <div className={styles.app}>
       <main className={styles.canvasHost} aria-label="Canvas">
-        <CanvasViewport brush={brush} onEngine={onEngine} onTap={onTap} />
+        <CanvasViewport tool={tool} onEngine={onEngine} onTap={onTap} />
       </main>
       {!uiHidden && (
         <DevToolbar
-          brush={brush}
-          onBrushChange={setBrush}
+          presets={PRESETS}
+          preset={preset}
+          adjust={adjust}
+          color={color}
+          eraser={eraser}
+          onPreset={setPresetId}
+          onAdjust={(next) => setAdjustments((all) => ({ ...all, [preset.id]: next }))}
+          onColor={(c) => {
+            setColor(c);
+            setEraser(false);
+          }}
+          onEraser={setEraser}
           onFit={() => engineRef.current?.fitToScreen()}
           onClear={() => engineRef.current?.clear()}
         />

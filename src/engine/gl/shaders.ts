@@ -1,38 +1,65 @@
 /**
- * Instanced round dab. One instance = vec4(x, y, radius, alpha) in document px.
- * Coverage has an antialiased edge `u_aa` wide (1 doc px into textures, 1 screen px for overlays).
+ * Instanced brush dab. Per instance: vec4(x, y, radius, alpha) + angle, in document px / radians.
+ * The tip is an ellipse (roundness) with a hardness falloff and an antialiased edge `u_aa` wide
+ * (1 doc px into textures, 1 screen px for overlays). Grain multiplies coverage, sampled either in
+ * document space ("moving": fixed to the paper) or in tip space ("texturized": stamped per dab).
  */
 export const DAB_VS = `#version 300 es
 layout(location = 0) in vec2 a_corner; // -1..1
 layout(location = 1) in vec4 a_dab;
+layout(location = 2) in float a_angle;
 uniform mat3 u_docToClip;
 uniform float u_aa;
 out vec2 v_local;
+out vec2 v_tip;
+out vec2 v_doc;
 out float v_radius;
 out float v_alpha;
 void main() {
   float extent = a_dab.z + u_aa;
-  v_local = a_corner * extent;
+  vec2 local = a_corner * extent;
+  float c = cos(a_angle);
+  float s = sin(a_angle);
+  v_local = local;
+  v_tip = vec2(c * local.x + s * local.y, -s * local.x + c * local.y); // rotate by -angle
+  v_doc = a_dab.xy + local;
   v_radius = a_dab.z;
   v_alpha = a_dab.w;
-  vec3 p = u_docToClip * vec3(a_dab.xy + v_local, 1.0);
+  vec3 p = u_docToClip * vec3(v_doc, 1.0);
   gl_Position = vec4(p.xy, 0.0, 1.0);
 }`;
 
 export const DAB_FS = `#version 300 es
 precision highp float;
 in vec2 v_local;
+in vec2 v_tip;
+in vec2 v_doc;
 in float v_radius;
 in float v_alpha;
 uniform vec4 u_color; // premultiplied
 uniform float u_aa;
 uniform bool u_ring;
+uniform float u_hardness;
+uniform float u_roundness;
+uniform sampler2D u_grain;
+uniform int u_grainMode; // 0 none, 1 moving, 2 texturized
+uniform float u_grainPeriod; // document px per grain tile
+uniform float u_grainDepth;
 out vec4 o;
 void main() {
-  float d = length(v_local);
-  float coverage = u_ring
-    ? clamp(1.0 - abs(d - v_radius) / u_aa, 0.0, 1.0)
-    : clamp((v_radius - d) / u_aa + 0.5, 0.0, 1.0);
+  if (u_ring) {
+    float ring = clamp(1.0 - abs(length(v_local) - v_radius) / u_aa, 0.0, 1.0);
+    o = u_color * ring;
+    return;
+  }
+  float d = length(vec2(v_tip.x, v_tip.y / u_roundness)) / v_radius;
+  float aa = u_aa / v_radius;
+  float inner = min(u_hardness, 1.0 - aa);
+  float coverage = 1.0 - smoothstep(inner, 1.0 + 0.5 * aa, d);
+  if (u_grainMode > 0) {
+    vec2 uv = (u_grainMode == 1 ? v_doc : v_tip) / u_grainPeriod;
+    coverage *= mix(1.0, texture(u_grain, uv).r, u_grainDepth);
+  }
   o = u_color * (coverage * v_alpha);
 }`;
 

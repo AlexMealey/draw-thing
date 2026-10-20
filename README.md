@@ -3,7 +3,7 @@
 A pen-first drawing PWA for iPad + Apple Pencil and Windows tablets + Surface/MPP pens.
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the architecture and phased plan.
 
-**Status:** Phase 1. The WebGL2 engine, pan/zoom/rotate, pen input with pressure, and gestures are in. Undo and saving come in later phases.
+**Status:** Phase 2. The WebGL2 engine, pan/zoom/rotate, pen input and gestures are in, plus the brush engine with five presets (Ink, Pencil, Airbrush, Marker, Chalk) and an eraser. Layers, undo and saving come in later phases.
 
 ## Requirements
 

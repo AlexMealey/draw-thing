@@ -127,7 +127,7 @@ export function DebugHud() {
       ? `latency ${e.latencyMs.toFixed(1)} ms · dabs/frame ${e.dabsPerFrame} · cpu ${e.frameCpuMs.toFixed(2)} ms`
       : 'engine –',
     e?.running
-      ? `doc ${e.docSize} · zoom ${e.zoomPercent.toFixed(0)}% · rot ${e.rotationDeg.toFixed(0)}° · desync ${e.desynchronized ? 'yes' : 'no'}`
+      ? `doc ${e.docSize} · zoom ${e.zoomPercent.toFixed(0)}% · rot ${e.rotationDeg.toFixed(0)}° · desync ${e.desynchronized ? 'yes' : 'no'} · stroke ${e.strokeFormat}`
       : '',
     `webgl2 ${caps.webgl2 ? 'yes' : 'NO'} · coalesced ${caps.coalesced ? 'yes' : 'no'} · predicted ${caps.predicted ? 'yes' : 'no'}`,
     `sw ${snap?.swControlled ? 'controlling' : 'none'} · ${snap?.online === false ? 'offline' : 'online'} · storage ${persisted === null ? '?' : persisted ? 'persisted' : 'best-effort'}`,

@@ -421,9 +421,16 @@ interface BrushPreset {
 - **Opacity** is the *ceiling* for the whole stroke. It's applied once, when the stroke buffer is composited onto the layer, so a stroke can never get more opaque than this value however much you scrub.
 - **Pressure mapping** uses per-target curves (size and flow) edited with a 2-handle bezier in Brush Settings.
 
-**MVP presets (5):** Ink (hard round, flow 1, size ← pressure), Pencil (grainy tip, moving grain, flow ← pressure,
-tilt → size), Soft Airbrush (gaussian tip, flow 0.08, spacing 10%), Marker (`accumulate: 'max'`), and Eraser
-(Ink and Airbrush variants with `erase: true`).
+**MVP presets (5):**
+- Ink: hard round, flow 1, size ← pressure.
+- Pencil: grainy tip, moving grain, flow ← pressure, tilt → size.
+- Airbrush: soft tip, flow 0.1, spacing 8%.
+- Marker: chisel tip, `accumulate: 'max'`.
+- Chalk: texturized grain plus size, angle and scatter jitter.
+
+The **Eraser** is a mode, not a preset: it erases with whichever brush is selected, as in Procreate. The
+Surface Pen's eraser end switches it on for that stroke. Grain textures are generated procedurally
+(`brush/grain.ts`), so there are no image assets to ship.
 
 ### 3.2 Stroke rendering algorithm  — [L]
 

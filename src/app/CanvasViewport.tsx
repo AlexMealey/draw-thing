@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import type { BrushSettings } from '../engine/brush/RoundBrush';
+import type { ToolSettings } from '../engine/brush/tool';
 import { Engine } from '../engine/Engine';
 import { hasWebGL2 } from '../engine/gl/context';
 import styles from './App.module.css';
 
 interface Props {
-  brush: BrushSettings;
+  tool: ToolSettings;
   onEngine: (engine: Engine | null) => void;
   onTap: (fingers: number) => void;
 }
@@ -14,7 +14,7 @@ interface Props {
  * Hosts the drawing canvas. The Engine is created once per mount and renders on its own;
  * React only forwards settings and never re-renders during a stroke.
  */
-export function CanvasViewport({ brush, onEngine, onTap }: Props) {
+export function CanvasViewport({ tool, onEngine, onTap }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<Engine | null>(null);
   const callbacks = useRef({ onEngine, onTap });
@@ -42,8 +42,8 @@ export function CanvasViewport({ brush, onEngine, onTap }: Props) {
   }, []);
 
   useEffect(() => {
-    engineRef.current?.setBrush(brush);
-  }, [brush]);
+    engineRef.current?.setTool(tool);
+  }, [tool]);
 
   if (!supported) {
     return (

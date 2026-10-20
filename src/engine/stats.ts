@@ -14,6 +14,8 @@ export const engineStats = {
   rotationDeg: 0,
   docSize: '',
   desynchronized: false,
+  /** Stroke buffer format: rgba16f avoids banding in low-flow buildup. */
+  strokeFormat: '',
 };
 
 export const ema = (prev: number, next: number, k = 0.2) =>

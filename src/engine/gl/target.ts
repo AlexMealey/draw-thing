@@ -1,5 +1,5 @@
 /**
- * A texture + framebuffer pair holding premultiplied RGBA8.
+ * A texture + framebuffer pair holding premultiplied RGBA.
  * Convention: texture row y holds document row y (top-down), so scissor rects equal document rects.
  */
 export interface Target {
@@ -7,12 +7,28 @@ export interface Target {
   fbo: WebGLFramebuffer;
   w: number;
   h: number;
+  format: TargetFormat;
 }
 
-export function createTarget(gl: WebGL2RenderingContext, w: number, h: number): Target {
+/** 'rgba16f' keeps low-flow buildup from banding; needs a color-buffer-float extension. */
+export type TargetFormat = 'rgba8' | 'rgba16f';
+
+/** The best format for accumulating strokes on this GPU. */
+export function strokeFormat(gl: WebGL2RenderingContext): TargetFormat {
+  const floatRenderable =
+    gl.getExtension('EXT_color_buffer_float') ?? gl.getExtension('EXT_color_buffer_half_float');
+  return floatRenderable ? 'rgba16f' : 'rgba8';
+}
+
+export function createTarget(
+  gl: WebGL2RenderingContext,
+  w: number,
+  h: number,
+  format: TargetFormat = 'rgba8',
+): Target {
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, w, h);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, format === 'rgba16f' ? gl.RGBA16F : gl.RGBA8, w, h);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -23,12 +39,17 @@ export function createTarget(gl: WebGL2RenderingContext, w: number, h: number): 
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
   const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
   if (status !== gl.FRAMEBUFFER_COMPLETE) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fbo);
+    gl.deleteTexture(tex);
+    // Some drivers advertise float render targets but can't attach them: fall back.
+    if (format !== 'rgba8') return createTarget(gl, w, h, 'rgba8');
     throw new Error(`Framebuffer incomplete (0x${status.toString(16)})`);
   }
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  return { tex, fbo, w, h };
+  return { tex, fbo, w, h, format };
 }
 
 export function deleteTarget(gl: WebGL2RenderingContext, t: Target) {

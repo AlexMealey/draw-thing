@@ -1,7 +1,11 @@
-import { type BrushSettings, parseHexColor, radiusFor, spacingFor } from './brush/RoundBrush';
+import { parseHexColor } from './brush/color';
+import { DabGenerator } from './brush/DabGenerator';
+import { DEFAULT_PRESET_ID, presetById, type BrushPreset } from './brush/presets';
+import { Stabilizer } from './brush/Stabilizer';
 import { type Pt, StrokePath } from './brush/StrokePath';
+import type { ToolSettings } from './brush/tool';
 import { createGL, isDesynchronized } from './gl/context';
-import { createTarget, deleteTarget, type Rect, type Target } from './gl/target';
+import { createTarget, deleteTarget, type Rect, strokeFormat, type Target } from './gl/target';
 import { GestureRecognizer } from './input/GestureRecognizer';
 import { type InputSample, PointerInput, type StrokeSink } from './input/PointerInput';
 import { type Affine, identity, multiply, toMat3 } from './math/affine';
@@ -23,13 +27,33 @@ const SURROUND = [0.173, 0.173, 0.18, 1] as const;
 const CURSOR_RING = [0.38, 0.38, 0.38, 0.85] as const; // premultiplied mid-gray: visible on light and dark
 const KEY_ZOOM = 1.25;
 
+/** One in-progress stroke: its own copy of the tool settings and pipeline state. */
+interface Stroke {
+  preset: BrushPreset;
+  stabilizer: Stabilizer;
+  path: StrokePath;
+  dabs: DabGenerator;
+  /** Premultiplied; white for erase strokes, which only use coverage. */
+  color: [number, number, number, number];
+  opacity: number;
+  erase: boolean;
+  /** Prediction contradicts smoothing, so it's only used with StreamLine off. */
+  predict: boolean;
+  bounds: Rect | null;
+}
+
 /**
  * The drawing engine: owns the WebGL2 context, document textures, view transform and input,
  * and renders on demand in a requestAnimationFrame loop. No React in here.
  *
- * Phase 1 document model: one raster layer plus a stroke buffer. A stroke paints into the
- * stroke buffer (live-previewed by the present pass) and is merged into the layer on pen-up,
- * so a finger stroke that turns into a pinch can be discarded cleanly.
+ * Document model so far: one raster layer plus a stroke buffer. A stroke deposits dabs into the
+ * stroke buffer (flow builds up there), the present pass previews it at the stroke's opacity, and
+ * on pen-up it is merged into the layer at that opacity. A finger stroke that turns into a pinch
+ * is discarded cleanly.
+ *
+ * Stroke pipeline per sample: Stabilizer (StreamLine + pressure smoothing) → StrokePath
+ * (midpoint quadratic, arc-length spacing) → DabGenerator (pressure curves, tilt, jitter) →
+ * DabRenderer (tip shape + grain, one instanced draw per frame).
  */
 export class Engine implements StrokeSink {
   readonly docW: number;
@@ -51,15 +75,17 @@ export class Engine implements StrokeSink {
   private screenClip = new Float32Array(9);
   private gestureBase: Affine = identity();
 
-  private brush: BrushSettings = { size: 24, color: '#1c1c1e', eraser: false };
-  private brushRgb = parseHexColor(this.brush.color);
+  private tool: ToolSettings = {
+    preset: presetById(DEFAULT_PRESET_ID),
+    size: 8,
+    opacity: 1,
+    smoothing: 0,
+    color: '#1c1c1e',
+    eraser: false,
+  };
 
-  // In-progress stroke
-  private path: StrokePath | null = null;
-  private strokeSize = 0;
-  private strokeColor: [number, number, number, number] = [0, 0, 0, 1];
-  private strokeErase = false;
-  private strokeBounds: Rect | null = null;
+  private stroke: Stroke | null = null;
+  private strokeSeed = 1;
   private pending: 'commit' | 'cancel' | null = null;
   private queue: InputSample[] = [];
   private predicted: InputSample[] = [];
@@ -86,7 +112,7 @@ export class Engine implements StrokeSink {
     this.docW = Math.min(cap, Math.round(this.viewW * dpr));
     this.docH = Math.min(cap, Math.round(this.viewH * dpr));
     this.layer = createTarget(gl, this.docW, this.docH);
-    this.strokeBuf = createTarget(gl, this.docW, this.docH);
+    this.strokeBuf = createTarget(gl, this.docW, this.docH, strokeFormat(gl));
     this.fboClip = targetClip(this.layer);
     this.dabs = new DabRenderer(gl);
     this.presenter = new Presenter(gl);
@@ -126,14 +152,15 @@ export class Engine implements StrokeSink {
     engineStats.running = true;
     engineStats.docSize = `${this.docW}×${this.docH}`;
     engineStats.desynchronized = isDesynchronized(gl);
+    engineStats.strokeFormat = this.strokeBuf.format;
     this.requestFrame();
   }
 
   // ── Public API (called from React) ──────────────────────────────────────────
 
-  setBrush(brush: BrushSettings) {
-    this.brush = brush;
-    this.brushRgb = parseHexColor(brush.color);
+  /** Takes effect from the next stroke. */
+  setTool(tool: ToolSettings) {
+    this.tool = tool;
     this.requestFrame(); // cursor ring size
   }
 
@@ -166,20 +193,28 @@ export class Engine implements StrokeSink {
 
   begin(s: InputSample, opts: { pointerType: string; eraser: boolean }) {
     if (this.pending) this.renderNow(); // pen lifted and touched down within one frame
-    const size = this.brush.size;
-    this.strokeSize = size;
-    this.strokeErase = this.brush.eraser || opts.eraser;
-    const [r, g, b] = this.brushRgb;
-    this.strokeColor = this.strokeErase ? [1, 1, 1, 1] : [r, g, b, 1];
-    this.path = new StrokePath((p) => spacingFor(size, p));
-    this.strokeBounds = null;
+    const { preset, size, opacity, smoothing, color, eraser } = this.tool;
+    const erase = eraser || opts.eraser;
+    const [r, g, b] = parseHexColor(color);
+    const dabs = new DabGenerator(preset, size, this.strokeSeed++);
+    this.stroke = {
+      preset,
+      stabilizer: new Stabilizer(smoothing),
+      path: new StrokePath(dabs.spacingAt),
+      dabs,
+      color: erase ? [1, 1, 1, 1] : [r, g, b, 1],
+      opacity: Math.min(1, Math.max(0, opacity)),
+      erase,
+      predict: smoothing === 0,
+      bounds: null,
+    };
     this.hoverSample = null;
     this.queue.push(s);
     this.requestFrame();
   }
 
   extend(samples: InputSample[]) {
-    if (!this.path || this.pending) return;
+    if (!this.stroke || this.pending) return;
     for (const s of samples) this.queue.push(s);
     this.requestFrame();
   }
@@ -195,13 +230,13 @@ export class Engine implements StrokeSink {
   }
 
   end() {
-    if (!this.path) return;
+    if (!this.stroke) return;
     this.pending = 'commit';
     this.requestFrame();
   }
 
   cancel() {
-    if (!this.path) return;
+    if (!this.stroke) return;
     this.pending = 'cancel';
     this.queue.length = 0;
     this.requestFrame();
@@ -225,44 +260,58 @@ export class Engine implements StrokeSink {
     const start = performance.now();
     let newestInput = -1;
 
-    // 1. New dabs into the stroke buffer. MAX blending: one color per stroke, so the result is
-    //    the max coverage, and overlapping antialiased edges don't darken.
+    // 1. New dabs into the stroke buffer: 'over' builds up flow where dabs overlap, 'max'
+    //    (marker) never exceeds a single dab.
     const batch = this.batch;
     batch.clear();
-    if (this.path) {
+    const stroke = this.stroke;
+    if (stroke) {
       for (const s of this.queue) {
-        this.path.push(toPt(s), this.emitDab);
+        this.feed(stroke, stroke.stabilizer.push(s), this.emitDab);
         newestInput = s.t;
       }
-      if (this.pending === 'commit') this.path.finish(this.emitDab);
+      if (this.pending === 'commit') {
+        for (const s of stroke.stabilizer.catchUp()) this.feed(stroke, s, this.emitDab);
+        stroke.path.finish(this.emitDab);
+      }
     }
     this.queue.length = 0;
-    if (batch.count > 0) {
+    if (stroke && batch.count > 0) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.strokeBuf.fbo);
       gl.viewport(0, 0, this.docW, this.docH);
       gl.disable(gl.SCISSOR_TEST);
       gl.enable(gl.BLEND);
-      gl.blendEquation(gl.MAX);
-      this.dabs.draw(batch, { docToClip: this.fboClip, color: this.strokeColor, aa: 1 });
+      if (stroke.preset.accumulate === 'max') {
+        gl.blendEquation(gl.MAX);
+      } else {
+        gl.blendEquation(gl.FUNC_ADD);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      }
+      this.dabs.draw(batch, {
+        docToClip: this.fboClip,
+        color: stroke.color,
+        aa: 1,
+        preset: stroke.preset,
+      });
       gl.blendEquation(gl.FUNC_ADD);
       gl.disable(gl.BLEND);
-      this.strokeBounds = unionRect(this.strokeBounds, batch.bounds());
+      stroke.bounds = unionRect(stroke.bounds, batch.bounds());
     }
 
-    // 2. Pen-up commits the stroke into the layer; a cancelled stroke just disappears.
-    if (this.pending) {
-      const r = this.strokeBounds && clampRect(this.strokeBounds, this.docW, this.docH);
+    // 2. Pen-up merges the stroke into the layer at its opacity; a cancelled stroke just goes.
+    if (stroke && this.pending) {
+      const r = stroke.bounds && clampRect(stroke.bounds, this.docW, this.docH);
       if (r) {
         if (this.pending === 'commit') {
-          this.presenter.merge(this.strokeBuf, this.layer, r, this.strokeErase);
+          this.presenter.merge(this.strokeBuf, this.layer, r, stroke.erase, stroke.opacity);
         }
         this.presenter.clear(this.strokeBuf, r);
       }
-      this.path = null;
+      this.stroke = null;
       this.pending = null;
-      this.strokeBounds = null;
       this.predicted = [];
     }
+    const live = this.stroke;
 
     // 3. Present: paper + layer + live stroke, through the view transform.
     const dpr = devicePixelRatio || 1;
@@ -273,8 +322,8 @@ export class Engine implements StrokeSink {
     this.presenter.draw({
       layer: this.layer,
       stroke: this.strokeBuf,
-      strokeOpacity: 1,
-      erase: this.path !== null && this.strokeErase,
+      strokeOpacity: live?.opacity ?? 1,
+      erase: live?.erase ?? false,
       docToClip,
       paper: PAPER,
       surround: SURROUND,
@@ -289,14 +338,24 @@ export class Engine implements StrokeSink {
     const screenAA = 1 / this.view.scale; // 1 CSS px in document units
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-    if (this.path && !this.strokeErase) {
+    if (live && !live.erase) {
       overlay.clear();
-      this.path.preview(this.predicted.map(toPt), this.emitOverlay);
-      this.dabs.draw(overlay, { docToClip, color: this.strokeColor, aa: 1 });
+      const saved = live.dabs.save();
+      const predicted = live.predict ? this.predicted : [];
+      live.path.preview(predicted.map(toPt), this.emitOverlay);
+      live.dabs.restore(saved);
+      const [r, g, b] = live.color;
+      const o = live.opacity;
+      this.dabs.draw(overlay, {
+        docToClip,
+        color: [r * o, g * o, b * o, o],
+        aa: 1,
+        preset: live.preset,
+      });
     }
-    if (this.hoverSample && !this.path) {
+    if (this.hoverSample && !live) {
       overlay.clear();
-      overlay.push(this.hoverSample.x, this.hoverSample.y, this.brush.size / 2, 1);
+      overlay.push(this.hoverSample.x, this.hoverSample.y, this.tool.size / 2, 1);
       this.dabs.draw(overlay, { docToClip, color: CURSOR_RING, aa: screenAA, ring: true });
     }
     gl.disable(gl.BLEND);
@@ -310,12 +369,17 @@ export class Engine implements StrokeSink {
     engineStats.rotationDeg = (this.view.rotation * 180) / Math.PI;
   };
 
+  private feed(stroke: Stroke, s: InputSample, sink: (pt: Pt) => void) {
+    stroke.dabs.setTilt(s.altitude, s.azimuth);
+    stroke.path.push(toPt(s), sink);
+  }
+
   private emitDab = (pt: Pt) => {
-    this.batch.push(pt.x, pt.y, radiusFor(this.strokeSize, pt.p), 1);
+    this.stroke?.dabs.emit(pt, this.batch);
   };
 
   private emitOverlay = (pt: Pt) => {
-    this.overlay.push(pt.x, pt.y, radiusFor(this.strokeSize, pt.p), 1);
+    this.stroke?.dabs.emit(pt, this.overlay);
   };
 
   // ── Environment events ──────────────────────────────────────────────────────

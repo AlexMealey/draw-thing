@@ -1,59 +1,125 @@
-import type { BrushSettings } from '../engine/brush/RoundBrush';
+import type { BrushPreset } from '../engine/brush/presets';
 import styles from './DevToolbar.module.css';
 
 const COLORS = ['#1c1c1e', '#f2f2f7', '#ff375f', '#ff9f0a', '#30d158', '#0a84ff', '#bf5af2'];
 
+export interface BrushAdjustments {
+  size: number;
+  opacity: number;
+  smoothing: number;
+}
+
 interface Props {
-  brush: BrushSettings;
-  onBrushChange: (brush: BrushSettings) => void;
+  presets: readonly BrushPreset[];
+  preset: BrushPreset;
+  adjust: BrushAdjustments;
+  color: string;
+  eraser: boolean;
+  onPreset: (id: string) => void;
+  onAdjust: (adjust: BrushAdjustments) => void;
+  onColor: (color: string) => void;
+  onEraser: (eraser: boolean) => void;
   onFit: () => void;
   onClear: () => void;
 }
 
-/** Temporary Phase 1 controls for testing the engine; replaced by the real UI in Phase 5. */
-export function DevToolbar({ brush, onBrushChange, onFit, onClear }: Props) {
-  const set = (patch: Partial<BrushSettings>) => onBrushChange({ ...brush, ...patch });
+/** Temporary controls for testing the engine; replaced by the real UI in Phase 5. */
+export function DevToolbar(props: Props) {
+  const { presets, preset, adjust, color, eraser } = props;
+  const set = (patch: Partial<BrushAdjustments>) => props.onAdjust({ ...adjust, ...patch });
 
   return (
     <div className={styles.toolbar} role="toolbar" aria-label="Brush">
-      <label className={styles.size}>
-        Size
-        <input
-          type="range"
-          min={1}
-          max={200}
-          value={brush.size}
-          onChange={(e) => set({ size: Number(e.target.value) })}
-        />
-        <output>{brush.size}</output>
-      </label>
-      <div className={styles.group}>
-        {COLORS.map((color) => (
+      <div className={styles.group} role="radiogroup" aria-label="Brush">
+        {presets.map((p) => (
           <button
-            key={color}
+            key={p.id}
+            className={styles.button}
+            role="radio"
+            aria-checked={p.id === preset.id}
+            onClick={() => props.onPreset(p.id)}
+          >
+            {p.name}
+          </button>
+        ))}
+      </div>
+      <Slider
+        label="Size"
+        min={1}
+        max={preset.size.max}
+        value={adjust.size}
+        display={`${adjust.size}`}
+        onChange={(size) => set({ size })}
+      />
+      <Slider
+        label="Opacity"
+        min={1}
+        max={100}
+        value={Math.round(adjust.opacity * 100)}
+        display={`${Math.round(adjust.opacity * 100)}%`}
+        onChange={(v) => set({ opacity: v / 100 })}
+      />
+      <Slider
+        label="StreamLine"
+        min={0}
+        max={100}
+        value={Math.round(adjust.smoothing * 100)}
+        display={`${Math.round(adjust.smoothing * 100)}%`}
+        onChange={(v) => set({ smoothing: v / 100 })}
+      />
+      <div className={styles.group}>
+        {COLORS.map((c) => (
+          <button
+            key={c}
             className={styles.swatch}
-            style={{ background: color }}
-            aria-label={`Color ${color}`}
-            aria-pressed={!brush.eraser && brush.color === color}
-            onClick={() => set({ color, eraser: false })}
+            style={{ background: c }}
+            aria-label={`Color ${c}`}
+            aria-pressed={!eraser && color === c}
+            onClick={() => props.onColor(c)}
           />
         ))}
       </div>
       <div className={styles.group}>
         <button
           className={styles.button}
-          aria-pressed={brush.eraser}
-          onClick={() => set({ eraser: !brush.eraser })}
+          aria-pressed={eraser}
+          title="Erase with the selected brush"
+          onClick={() => props.onEraser(!eraser)}
         >
           Eraser
         </button>
-        <button className={styles.button} onClick={onFit}>
+        <button className={styles.button} onClick={props.onFit}>
           Fit
         </button>
-        <button className={styles.button} onClick={onClear}>
+        <button className={styles.button} onClick={props.onClear}>
           Clear
         </button>
       </div>
     </div>
+  );
+}
+
+interface SliderProps {
+  label: string;
+  min: number;
+  max: number;
+  value: number;
+  display: string;
+  onChange: (value: number) => void;
+}
+
+function Slider({ label, min, max, value, display, onChange }: SliderProps) {
+  return (
+    <label className={styles.slider}>
+      {label}
+      <input
+        type="range"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+      <output>{display}</output>
+    </label>
   );
 }

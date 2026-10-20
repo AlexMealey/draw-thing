@@ -1,25 +1,29 @@
 import type { Rect } from '../gl/target';
 
-/** Growable instance buffer of dabs (x, y, radius, alpha) plus their bounding box. */
+/** Floats per dab: x, y, radius, alpha, angle. */
+export const DAB_STRIDE = 5;
+
+/** Growable instance buffer of dabs plus their bounding box. */
 export class DabBatch {
-  data = new Float32Array(4 * 1024);
+  data = new Float32Array(DAB_STRIDE * 1024);
   count = 0;
   private minX = Infinity;
   private minY = Infinity;
   private maxX = -Infinity;
   private maxY = -Infinity;
 
-  push(x: number, y: number, radius: number, alpha: number) {
-    if ((this.count + 1) * 4 > this.data.length) {
+  push(x: number, y: number, radius: number, alpha: number, angle = 0) {
+    if ((this.count + 1) * DAB_STRIDE > this.data.length) {
       const grown = new Float32Array(this.data.length * 2);
       grown.set(this.data);
       this.data = grown;
     }
-    const i = this.count++ * 4;
+    const i = this.count++ * DAB_STRIDE;
     this.data[i] = x;
     this.data[i + 1] = y;
     this.data[i + 2] = radius;
     this.data[i + 3] = alpha;
+    this.data[i + 4] = angle;
     const r = radius + 1; // antialiased edge
     this.minX = Math.min(this.minX, x - r);
     this.minY = Math.min(this.minY, y - r);
