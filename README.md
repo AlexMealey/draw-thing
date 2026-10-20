@@ -3,16 +3,19 @@
 A pen-first drawing PWA for iPad + Apple Pencil and Windows tablets + Surface/MPP pens.
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the architecture and phased plan.
 
-**Status:** Phase 5. In so far:
+**Status:** Phase 6. In so far:
 
 - the WebGL2 engine, pen input and gestures
 - the brush engine (Ink, Pencil, Airbrush, Marker, Chalk, plus an eraser)
 - layers with blend modes, and undo/redo
 - the full interface: top bar, sidebar, brush library and settings with pressure curves, colour
-  picker, layers panel with thumbnails and drag-to-reorder, eyedropper, gallery with canvas sizes,
-  and keyboard shortcuts
+  picker, layers panel with thumbnails and drag-to-reorder, eyedropper, and keyboard shortcuts
+- saving: every change is autosaved on the device, the app reopens the last artwork, and the
+  gallery lists saved artworks (rename, duplicate, delete)
+- export to PNG, JPEG, layered PSD and `.drawthing` (lossless backup); import of those, plus
+  photos as a new canvas or onto a layer
 
-Saving and export come next (Phase 6).
+PWA hardening (iOS install hint, context-loss recovery) comes next (Phase 7).
 
 ## Requirements
 
@@ -41,13 +44,13 @@ Run npm inside the dev image with `./scripts/dnpm`:
 ./scripts/dnpm run check
 ```
 
-| Command                        | What it does                                                             |
-| ------------------------------ | ------------------------------------------------------------------------ |
-| `docker compose up dev`        | Vite dev server on http://localhost:5173 (no service worker in dev)      |
-| `./scripts/dnpm run check`     | Typecheck, lint, format check and unit tests                             |
-| `./scripts/dnpm run build`     | Production build into `dist/`                                            |
-| `./scripts/dnpm install <pkg>` | Add a dependency (updates `package.json` and the lockfile)               |
-| `./scripts/e2e`                | Playwright end-to-end tests (PWA install/offline, pixel-exact undo/redo) |
+| Command                        | What it does                                                            |
+| ------------------------------ | ----------------------------------------------------------------------- |
+| `docker compose up dev`        | Vite dev server on http://localhost:5173 (no service worker in dev)     |
+| `./scripts/dnpm run check`     | Typecheck, lint, format check and unit tests                            |
+| `./scripts/dnpm run build`     | Production build into `dist/`                                           |
+| `./scripts/dnpm install <pkg>` | Add a dependency (updates `package.json` and the lockfile)              |
+| `./scripts/e2e`                | Playwright end-to-end tests (PWA, undo/redo, saving, export and import) |
 
 When `package.json` changes under you (e.g. after a `git pull`), refresh the dependency volume:
 
@@ -65,8 +68,9 @@ One image, three modes. The mode is chosen by an env file in `deploy/env/`.
 | **LAN**         | Tablets on your home/office network                    | `https://<LAN IP>`         | Caddy's internal CA, trusted once per device |
 | **Cloud**       | Anywhere, via a domain name                            | `https://draw.example.com` | Automatic Let's Encrypt certificate          |
 
-DrawThing has no backend. Drawings stay in each device's browser storage (IndexedDB, from Phase 6),
-so every mode serves the same static files.
+DrawThing has no backend. Drawings stay in each device's browser storage (IndexedDB), so every mode
+serves the same static files. Each device and browser has its own gallery: use Share → DrawThing to
+move or back up artwork.
 
 ### Same system
 
@@ -168,7 +172,9 @@ Add query flags once. They're remembered per device, so the installed app keeps 
 src/
   app/        React UI: editor/ (top bar, sidebar, panels), gallery/, ui/ (panel, sliders, icons)
   state/      Zustand stores: document (layers), tools (persisted per device), history, thumbnails
-  engine/     WebGL2 engine: input, gestures, view transform, brush, rendering
+  engine/     WebGL2 engine: input, gestures, view transform, brush, layers, history, rendering
+  persistence/  IndexedDB projects and tiles, the autosaver, the saved document format
+  files/      export and import: PNG/JPEG, PSD (ag-psd, in a worker), .drawthing (zip), delivery
   debug/      flags, HUD, remote logging client
   platform/   OS / install-mode detection
   styles/     global CSS: design tokens + browser-gesture suppression

@@ -1,6 +1,6 @@
 import type { Rect } from '../gl/target';
 
-/** History and (later) saving work in 256×256 document tiles (ROADMAP §4). */
+/** History and saving work in 256×256 document tiles (ROADMAP §4). */
 export const TILE = 256;
 
 export interface TileGrid {

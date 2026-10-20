@@ -1,23 +1,8 @@
 import { expect, type Page, test } from '@playwright/test';
+import { hash } from './hooks';
 
 // Phase 4 exit criterion: undo/redo is pixel-identical, through repeated cycles, across strokes
 // and every kind of layer operation.
-
-/** The part of the Engine that ?debug exposes as window.__drawthing. */
-interface EngineHook {
-  debugHash(): string;
-  undo(): void;
-  redo(): void;
-  whenIdle(): Promise<void>;
-}
-
-declare global {
-  interface Window {
-    __drawthing?: EngineHook;
-  }
-}
-
-const hash = (page: Page) => page.evaluate(() => window.__drawthing!.debugHash());
 
 async function stroke(page: Page, y: number, x0 = 160, x1 = 820) {
   await page.mouse.move(x0, y);

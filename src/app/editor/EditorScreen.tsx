@@ -8,6 +8,7 @@ import {
   useTools,
 } from '../../state/toolStore';
 import { CanvasViewport } from '../CanvasViewport';
+import type { OpenProject, Session } from '../project';
 import { ActionsPanel } from './ActionsPanel';
 import { BrushLibrary } from './BrushLibrary';
 import { BrushSettings } from './BrushSettings';
@@ -24,10 +25,12 @@ const SIDEBAR = 64;
 export type PanelId = 'brushes' | 'brushSettings' | 'layers' | 'color' | 'actions';
 
 interface Props {
-  docSize: { w: number; h: number };
+  project: OpenProject;
   debug: boolean;
   engine: () => Engine | null;
-  onEngine: (engine: Engine | null) => void;
+  onSession: (session: Session | null) => void;
+  /** Saves now; resolves when it's written. */
+  flush: () => Promise<void>;
   onNotice: (message: string) => void;
   onGallery: () => void;
   onNewCanvas: () => void;
@@ -40,10 +43,11 @@ interface Loupe {
 }
 
 export function EditorScreen({
-  docSize,
+  project,
   debug,
   engine,
-  onEngine,
+  onSession,
+  flush,
   onNotice,
   onGallery,
   onNewCanvas,
@@ -164,9 +168,9 @@ export function EditorScreen({
       >
         <CanvasViewport
           tool={tool}
-          docSize={docSize}
+          project={project}
           insets={insets}
-          onEngine={onEngine}
+          onSession={onSession}
           onTap={onTap}
           onNotice={onNotice}
           onEyedropper={setLoupe}
@@ -214,6 +218,10 @@ export function EditorScreen({
           {open === 'color' && <ColorPanel onClose={close} />}
           {open === 'actions' && (
             <ActionsPanel
+              project={project}
+              engine={engine}
+              flush={flush}
+              onNotice={onNotice}
               onClose={close}
               onNewCanvas={() => {
                 close();

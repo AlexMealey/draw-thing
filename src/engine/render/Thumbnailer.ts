@@ -15,8 +15,9 @@ export class Thumbnailer {
     private gl: WebGL2RenderingContext,
     docW: number,
     docH: number,
+    size = THUMB_SIZE,
   ) {
-    const scale = THUMB_SIZE / Math.max(docW, docH);
+    const scale = Math.min(1, size / Math.max(docW, docH));
     const tw = Math.max(1, Math.round(docW * scale));
     const th = Math.max(1, Math.round(docH * scale));
     let w = docW;
@@ -29,7 +30,12 @@ export class Thumbnailer {
     this.chain.push(createTarget(gl, tw, th));
   }
 
+  /** PNG data URL. */
   render(src: Target): string {
+    return imageToDataURL(this.renderImage(src));
+  }
+
+  renderImage(src: Target): ImageData {
     const gl = this.gl;
     gl.disable(gl.SCISSOR_TEST);
     let prev = src;
@@ -40,7 +46,7 @@ export class Thumbnailer {
       prev = t;
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    return imageToDataURL(readImage(gl, prev));
+    return readImage(gl, prev);
   }
 
   dispose() {

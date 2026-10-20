@@ -809,7 +809,7 @@ Keyboard shortcuts cover Windows and iPads with keyboards: `Ctrl/⌘+Z`, `Shift+
 Size and opacity sliders write to `toolStore` at most once per rAF. The engine reads the value at the next stroke begin.
 
 **As built (Phase 5):**
-- The app opens straight into the editor on a screen-size canvas. The gallery overlays it, with "Current canvas" and **New canvas** (five size presets plus a custom size, each showing its layer limit). Saved artworks join the gallery in Phase 6.
+- The app opens straight into the editor on a screen-size canvas. The gallery overlays it, with "Current canvas" and **New canvas** (five size presets plus a custom size, each showing its layer limit). Since Phase 6 it reopens the last artwork, and the gallery lists the saved ones.
 - **Tool state is persisted per device** in a Zustand store backed by `localStorage`:
   - the current tool, and a separate brush for painting and for erasing (as in Procreate)
   - size, opacity and StreamLine per tool and brush
@@ -863,6 +863,25 @@ DB "drawthing" v1
 - Flush immediately on `visibilitychange → hidden` and `pagehide`, because iOS may kill a backgrounded PWA without warning.
 - **Crash recovery:** set `meta.cleanShutdown = false` on open. On next launch, reopen the last project from IDB, which is always at most one stroke behind.
 - On WebGL context loss, rebuild every layer texture from the `tiles` store.
+
+**As built (Phase 6):**
+- **Storage** (`src/persistence/`): the schema above, minus `brushes` (brush edits live with the tool settings in `localStorage`) and with `meta` holding only `lastOpenProject`. Tiles are zlib Blobs under `[projectId, layerId, tileKey]`, so a project's or layer's tiles are one key range.
+- **Autosave** (`Autosaver`): about 500 ms after the last change, and immediately on `visibilitychange → hidden` and `pagehide`. The engine keeps the latest content of every changed tile, taken from history entries (stroke readbacks, layer operations, undo/redo), so a save never reads the GPU again. Each save is **one transaction**: changed tiles, deleted layers' tile ranges, doc JSON, and a thumbnail at most every 10 s. If a save fails, the next one rewrites the whole project.
+- **No persistence worker:** `CompressionStream` and IndexedDB are already asynchronous, so saving stays on the main thread without blocking input. `comlink` isn't used.
+- **Crash recovery:** the app reopens the last artwork on launch. It's at most one save behind, and a stroke that ended in the same frame as a save is committed before saving. The `cleanShutdown` flag wasn't needed.
+- **Gallery:** saved artworks, newest first, with Rename, Duplicate, Share as .drawthing and Delete. A new canvas is stored on its first change. `navigator.storage.persist()` is requested after the first save.
+- **Export** (`src/files/`):
+  - PNG and JPEG read the composite back in one call and encode with `OffscreenCanvas.convertToBlob`. JPEG uses the background color even when the background is hidden.
+  - PSD runs `ag-psd` in a module worker, with layers cropped to their content. The background is exported as a solid "Background" layer, and importing maps it back, so the round trip is exact.
+  - `.drawthing` is written straight from IndexedDB, with the tiles stored as-is in the zip. It works from the gallery without opening the artwork.
+- **Delivery** is hand-rolled rather than `browser-fs-access`: the Save dialog on Chromium, the share sheet on touch devices, a download otherwise. If the dialog's user activation expired during a slow export, a "Save …" button asks for one more tap.
+- **Import:**
+  - `.drawthing`, PSD (8-bit; groups flattened, unsupported modes become normal, with a notice) and PNG/JPEG/WebP, each as a new artwork, with images over 4096 px scaled down.
+  - Actions → Insert image places a photo on a new layer, which can be undone.
+  - Imported documents are validated (`parseSavedDocument`) before anything is stored.
+- **Tests:**
+  - Unit: formats, tiles, PSD round trip, and the project store on `fake-indexeddb`.
+  - E2E: reload restores the image exactly; incremental saves stay exact through layer operations and undo; PNG/JPEG/PSD/.drawthing export, and .drawthing re-import is pixel-identical.
 
 ### 6.3 Cloud sync (optional, P9)  — [L]
 

@@ -1,58 +1,92 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { DebugHud } from '../debug/DebugHud';
-import { type Engine, screenDocSize } from '../engine/Engine';
-import { historyStore } from '../state/historyStore';
+import { screenDocSize } from '../engine/limits';
+import { setLastOpen } from '../persistence/projects';
 import { EditorScreen } from './editor/EditorScreen';
 import { GalleryScreen } from './gallery/GalleryScreen';
+import { newProject, openLast, type OpenProject, openProject, type Session } from './project';
 import { Toast } from './Toast';
 import { UpdatePrompt } from './UpdatePrompt';
-
-interface OpenCanvas {
-  /** Changing the key remounts the editor, and with it a fresh engine and document. */
-  key: number;
-  size: { w: number; h: number };
-}
 
 type Gallery = { open: false } | { open: true; startNew: boolean; thumbnail: string | null };
 
 export function App({ debug }: { debug: boolean }) {
-  const engineRef = useRef<Engine | null>(null);
-  const [canvas, setCanvas] = useState<OpenCanvas>(() => ({ key: 1, size: screenDocSize() }));
+  const session = useRef<Session | null>(null);
+  const [project, setProject] = useState<OpenProject | null>(null);
   const [gallery, setGallery] = useState<Gallery>({ open: false });
   const [notice, setNotice] = useState<string | null>(null);
 
-  const getEngine = useCallback(() => engineRef.current, []);
-  const onEngine = useCallback((engine: Engine | null) => {
-    engineRef.current = engine;
+  // Launch into the artwork that was open last (it's at most one autosave behind).
+  useEffect(() => {
+    let cancelled = false;
+    void openLast(screenDocSize()).then((p) => !cancelled && setProject(p));
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  const getEngine = useCallback(() => session.current?.engine ?? null, []);
+  const onSession = useCallback((s: Session | null) => {
+    session.current = s;
+  }, []);
+  const flush = useCallback(() => session.current?.saver.flush() ?? Promise.resolve(), []);
   const clearNotice = useCallback(() => setNotice(null), []);
 
-  const openGallery = (startNew: boolean) =>
-    setGallery({ open: true, startNew, thumbnail: engineRef.current?.documentThumbnail() ?? null });
+  const openGallery = async (startNew: boolean) => {
+    const thumbnail = session.current?.engine.documentThumbnail() ?? null;
+    await flush(); // so the gallery shows the latest state
+    setGallery({ open: true, startNew, thumbnail });
+  };
+
+  const open = async (id: string) => {
+    try {
+      await flush();
+      const p = await openProject(id);
+      if (!p) return setNotice('That artwork no longer exists');
+      setProject(p);
+      setGallery({ open: false });
+      void setLastOpen(id);
+    } catch (err) {
+      console.error(err);
+      setNotice('Couldn’t open that artwork');
+    }
+  };
+
+  if (!project) return null; // reading storage takes a moment on launch
 
   return (
     <>
-      {/* The editor stays mounted under the gallery, so "Current canvas" returns to it intact. */}
+      {/* The editor stays mounted under the gallery, so going back to it is instant. */}
       <EditorScreen
-        key={canvas.key}
-        docSize={canvas.size}
+        key={project.key}
+        project={project}
         debug={debug}
         engine={getEngine}
-        onEngine={onEngine}
+        onSession={onSession}
+        flush={flush}
         onNotice={setNotice}
-        onGallery={() => openGallery(false)}
-        onNewCanvas={() => openGallery(true)}
+        onGallery={() => void openGallery(false)}
+        onNewCanvas={() => void openGallery(true)}
       />
       {gallery.open && (
         <GalleryScreen
-          current={{ thumbnail: gallery.thumbnail, size: canvas.size }}
-          hasWork={historyStore.getState().canUndo}
+          current={{ id: project.id, thumbnail: gallery.thumbnail, size: project.size }}
           startNew={gallery.startNew}
           onOpenCurrent={() => setGallery({ open: false })}
+          onOpen={(id) => void open(id)}
           onCreate={(size) => {
-            setCanvas((c) => ({ key: c.key + 1, size }));
+            setProject(newProject(size));
             setGallery({ open: false });
           }}
+          onDelete={async (id) => {
+            if (id !== project.id) return;
+            // Deleting the open artwork: stop saving it, and leave a fresh canvas behind.
+            await session.current?.saver.discard();
+            setProject(newProject(project.size));
+            setGallery((g) => (g.open ? { ...g, thumbnail: null } : g));
+          }}
+          onRenamed={(id, name) => id === project.id && setProject({ ...project, name })}
+          onNotice={setNotice}
         />
       )}
       {notice && <Toast message={notice} onDone={clearNotice} />}

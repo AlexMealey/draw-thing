@@ -45,6 +45,8 @@ export interface DocumentState {
   layerCounter: number;
 
   reset(opts: { width: number; height: number; maxLayers: number }): void;
+  /** Replaces everything with a saved document. */
+  load(doc: DocumentData): void;
   /** Adds an empty layer above the active one and selects it. Null at the layer limit. */
   addLayer(): string | null;
   /** Inserts a prepared layer (e.g. a duplicate) at a stack index and selects it. */
@@ -59,6 +61,21 @@ export interface DocumentState {
   /** Replaces the whole stack, e.g. after Flatten. */
   replaceLayers(layers: LayerMeta[], activeId: string): void;
 }
+
+/** The state without its actions. */
+export type DocumentData = Omit<
+  DocumentState,
+  | 'reset'
+  | 'load'
+  | 'addLayer'
+  | 'insertLayer'
+  | 'removeLayer'
+  | 'selectLayer'
+  | 'updateLayer'
+  | 'moveLayer'
+  | 'setBackground'
+  | 'replaceLayers'
+>;
 
 let idSeq = 0;
 
@@ -100,6 +117,18 @@ export const documentStore = createStore<DocumentState>()((set, get) => {
         layers: [layer],
         activeLayerId: layer.id,
         layerCounter: 1,
+      });
+    },
+
+    load(doc) {
+      set({
+        width: doc.width,
+        height: doc.height,
+        maxLayers: doc.maxLayers,
+        background: { ...doc.background },
+        layers: doc.layers.map((l) => ({ ...l })),
+        activeLayerId: doc.activeLayerId,
+        layerCounter: doc.layerCounter,
       });
     },
 

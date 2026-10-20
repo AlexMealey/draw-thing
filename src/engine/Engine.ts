@@ -15,13 +15,21 @@ import { type Pt, StrokePath } from './brush/StrokePath';
 import type { ToolSettings } from './brush/tool';
 import { createGL, isDesynchronized } from './gl/context';
 import { createTarget, deleteTarget, type Rect, strokeFormat, type Target } from './gl/target';
+import type { SavedDocument } from '../persistence/document';
 import { compressTile, inflateTile } from './history/compress';
-import { type DocSnapshot, History, type HistoryEntry, type LayerTiles } from './history/History';
+import {
+  type DocSnapshot,
+  History,
+  type HistoryEntry,
+  type LayerTiles,
+  type TileData,
+} from './history/History';
 import { type Capture, TileIO } from './history/TileIO';
-import { alignToTiles, tileGrid } from './history/tiles';
+import { alignToTiles, tileGrid, tileRect } from './history/tiles';
 import { GestureRecognizer } from './input/GestureRecognizer';
 import { type InputSample, PointerInput, type StrokeSink } from './input/PointerInput';
 import { gpuBudgetBytes, historyBudgetBytes, maxLayersFor } from './layers/budget';
+import { MAX_DOC_SIZE, screenDocSize } from './limits';
 import {
   Compositor,
   type GpuLayer,
@@ -35,6 +43,14 @@ import { renderBrushPreview } from './render/BrushPreview';
 import { DabRenderer } from './render/DabRenderer';
 import { Presenter } from './render/Presenter';
 import { QuadPass, targetClip } from './render/QuadPass';
+import {
+  contentBounds,
+  crop,
+  flattenOnto,
+  imageToDataURL,
+  readPremultiplied,
+  unpremultiply,
+} from './render/readback';
 import { Thumbnailer } from './render/Thumbnailer';
 import { ema, engineStats } from './stats';
 import { type Insets, NO_INSETS, ViewTransform } from './view/ViewTransform';
@@ -47,6 +63,10 @@ export interface EngineOptions {
   onContextLost?: () => void;
   /** Document size in px; defaults to the screen size (× device pixel ratio). */
   docSize?: { w: number; h: number };
+  /** Opens a saved document (its size wins over `docSize`); pixels follow via loadTiles(). */
+  document?: SavedDocument;
+  /** Fired after every change that's recorded in history, i.e. whenever there's unsaved work. */
+  onChange?: () => void;
   /** View margins covered by UI chrome; "fit to screen" keeps the canvas clear of them. */
   insets?: Insets;
   /** Eyedropper loupe position (view CSS px) and color under it; null when it ends. */
@@ -54,17 +74,7 @@ export interface EngineOptions {
   onColorPicked?: (color: string) => void;
 }
 
-/** Largest document side; also the size cap for new canvases. */
-export const MAX_DOC_SIZE = 4096;
-
-/** The default "screen size" canvas, like Procreate's. */
-export function screenDocSize(): { w: number; h: number } {
-  const dpr = devicePixelRatio || 1;
-  return {
-    w: Math.min(MAX_DOC_SIZE, Math.round(innerWidth * dpr)),
-    h: Math.min(MAX_DOC_SIZE, Math.round(innerHeight * dpr)),
-  };
-}
+export { MAX_DOC_SIZE, screenDocSize };
 
 const SURROUND = [0.173, 0.173, 0.18, 1] as const;
 const CURSOR_RING = [0.38, 0.38, 0.38, 0.85] as const; // premultiplied mid-gray: visible on light and dark
@@ -73,6 +83,17 @@ const KEY_ZOOM = 1.25;
 const KEEP_RAW_STEPS = 8;
 const COMPRESS_DELAY_MS = 1500;
 const THUMBNAIL_DELAY_MS = 300;
+/** Longest side of the gallery thumbnail, px. */
+const GALLERY_THUMB = 512;
+
+/** A layer's pixels for export (PSD), cropped to its content. */
+export interface LayerExport {
+  meta: LayerMeta;
+  left: number;
+  top: number;
+  /** Straight alpha; null for an empty layer. */
+  pixels: ImageData | null;
+}
 
 /** One in-progress stroke: its own copy of the tool settings and pipeline state. */
 interface Stroke {
@@ -158,7 +179,16 @@ export class Engine implements StrokeSink {
   private captures = new Map<HistoryEntry, Capture>();
   private compressTimer: ReturnType<typeof setTimeout> | undefined;
 
+  /**
+   * Tiles changed since the autosaver last asked, latest content per tile. Every pixel change
+   * comes through a history entry, whose tiles are reused here instead of reading the GPU again.
+   */
+  private unsaved = new Map<string, Map<number, TileData>>();
+  /** True while a saved document's tiles are being uploaded; input waits. */
+  private loading = false;
+
   private thumbnailer: Thumbnailer;
+  private galleryThumbnailer: Thumbnailer | null = null;
   private thumbsDirty = new Set<string>();
   private thumbTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -185,7 +215,8 @@ export class Engine implements StrokeSink {
 
     const dpr = devicePixelRatio || 1;
     const cap = Math.min(MAX_DOC_SIZE, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number);
-    const size = opts.docSize ?? screenDocSize();
+    const saved = opts.document;
+    const size = saved ? { w: saved.width, h: saved.height } : (opts.docSize ?? screenDocSize());
     this.docW = Math.max(1, Math.min(cap, Math.round(size.w)));
     this.docH = Math.max(1, Math.min(cap, Math.round(size.h)));
     this.strokeBuf = createTarget(gl, this.docW, this.docH, strokeFormat(gl));
@@ -202,8 +233,14 @@ export class Engine implements StrokeSink {
       this.publishHistory,
     );
 
-    const maxLayers = maxLayersFor(this.docW * this.docH * 4, gpuBudgetBytes());
-    documentStore.getState().reset({ width: this.docW, height: this.docH, maxLayers });
+    let maxLayers = maxLayersFor(this.docW * this.docH * 4, gpuBudgetBytes());
+    if (saved) {
+      // A document from a bigger device keeps its layers; it just can't gain more.
+      maxLayers = Math.max(maxLayers, saved.layers.length);
+      documentStore.getState().load({ ...saved, width: this.docW, height: this.docH, maxLayers });
+    } else {
+      documentStore.getState().reset({ width: this.docW, height: this.docH, maxLayers });
+    }
     this.syncLayers(documentStore.getState());
     this.unsubscribe = documentStore.subscribe(this.onDocumentChange);
 
@@ -405,11 +442,10 @@ export class Engine implements StrokeSink {
     });
   }
 
-  /** Small PNG data URL of the whole composited document, for the gallery. */
+  /** PNG data URL of the composited document, gallery-sized. */
   documentThumbnail(): string | null {
-    if (this.disposed || this.lost) return null;
-    if (this.docDirty) this.renderNow();
-    return this.thumbnailer.render(this.compositor.output);
+    const img = this.galleryThumbnail();
+    return img && imageToDataURL(img);
   }
 
   /** A sample stroke of a brush, as a PNG data URL, for the brush library. */
@@ -417,12 +453,129 @@ export class Engine implements StrokeSink {
     return renderBrushPreview(this.gl, this.dabs, preset);
   }
 
+  /**
+   * Uploads a saved document's tiles (zlib Blobs or raw bytes) into the layer textures. Layers
+   * appear one by one; painting waits until everything is in.
+   */
+  async loadTiles(tiles: ReadonlyMap<string, ReadonlyMap<number, TileData>>): Promise<void> {
+    const grid = this.tileIO.grid;
+    const count = grid.cols * grid.rows;
+    this.loading = true;
+    try {
+      for (const [layerId, layer] of tiles) {
+        const raw = new Map<number, Uint8Array | null>();
+        for (const [key, tile] of layer) {
+          const data = await inflateTile(tile);
+          if (this.disposed || this.lost) return;
+          if (!Number.isInteger(key) || key < 0 || key >= count) continue;
+          const r = tileRect(grid, key);
+          if (data && data.byteLength !== r.w * r.h * 4) continue; // damaged tile
+          raw.set(key, data);
+        }
+        const target = this.layers.get(layerId);
+        if (!target) continue;
+        this.tileIO.write(target, raw);
+        this.compositor.invalidate();
+        this.markDirty('all');
+        this.markThumbs([layerId]);
+      }
+    } finally {
+      this.loading = false;
+    }
+  }
+
+  /** Tiles changed since the last call (the autosave payload), and forgets them. */
+  takeChanges(): Map<string, Map<number, TileData>> {
+    if (this.pending && !this.disposed && !this.lost) this.renderNow(); // a pen just lifted
+    for (const entry of [...this.captures.keys()]) entry.pending?.(); // stroke readbacks
+    const out = this.unsaved;
+    this.unsaved = new Map();
+    return out;
+  }
+
+  /** Every non-empty tile of every layer (a full save). Blocks on GPU readback. */
+  allTiles(): Map<string, Map<number, TileData>> {
+    const out = new Map<string, Map<number, TileData>>();
+    if (this.disposed || this.lost) return out;
+    for (const [id, target] of this.layers) out.set(id, this.tileIO.readAll(target));
+    return out;
+  }
+
+  /** The composited document, at most 512 px, for the gallery. */
+  galleryThumbnail(): ImageData | null {
+    if (this.disposed || this.lost) return null;
+    if (this.docDirty) this.renderNow();
+    this.galleryThumbnailer ??= new Thumbnailer(this.gl, this.docW, this.docH, GALLERY_THUMB);
+    return this.galleryThumbnailer.renderImage(this.compositor.output);
+  }
+
+  /**
+   * The full-size composited image, straight alpha. `opaque` puts it on the background color
+   * even when the background is hidden (JPEG has no transparency).
+   */
+  exportImage(opaque: boolean): ImageData {
+    this.renderNow();
+    const px = readPremultiplied(this.gl, this.compositor.output);
+    if (opaque)
+      flattenOnto(
+        px,
+        parseHexColor(documentStore.getState().background.color).map((v) => v * 255),
+      );
+    else unpremultiply(px);
+    return new ImageData(px, this.docW, this.docH);
+  }
+
+  /** Every layer's pixels, cropped to their content, bottom first (PSD export). */
+  exportLayers(): LayerExport[] {
+    const doc = documentStore.getState();
+    const out: LayerExport[] = [];
+    for (const meta of doc.layers) {
+      const target = this.layers.get(meta.id);
+      if (!target) continue;
+      const px = readPremultiplied(this.gl, target);
+      const r = contentBounds(px, this.docW, this.docH);
+      if (!r) {
+        out.push({ meta, left: 0, top: 0, pixels: null });
+        continue;
+      }
+      const cropped = crop(px, this.docW, r);
+      unpremultiply(cropped);
+      out.push({ meta, left: r.x, top: r.y, pixels: new ImageData(cropped, r.w, r.h) });
+    }
+    return out;
+  }
+
+  /** Adds a layer above the active one with the given pixels (premultiplied tiles). */
+  insertLayer(name: string, tiles: Map<number, Uint8Array>): boolean {
+    const doc = documentStore.getState();
+    if (this.stroke || this.loading) return false;
+    if (doc.layers.length >= doc.maxLayers) {
+      this.notice(`Layer limit reached (${doc.maxLayers} at this canvas size)`);
+      return false;
+    }
+    const before = snapshot(doc);
+    const layer = makeLayer(name);
+    const target = createTarget(this.gl, this.docW, this.docH);
+    this.tileIO.write(target, tiles);
+    this.layers.set(layer.id, target); // registered before the store change, so it's kept
+    this.markThumbs([layer.id]);
+    this.withoutRecording(() => doc.insertLayer(layer, activeIndex(doc) + 1));
+    this.pushHistory({
+      label: 'Insert image',
+      doc: { before, after: snapshot(documentStore.getState()) },
+      pixels: new Map([[layer.id, TileIO.diff(new Map(), tiles)]]),
+      time: performance.now(),
+      bytes: 0,
+    });
+    return true;
+  }
+
   undo() {
-    if (!this.stroke) this.enqueueHistory('undo');
+    if (!this.stroke && !this.loading) this.enqueueHistory('undo');
   }
 
   redo() {
-    if (!this.stroke) this.enqueueHistory('redo');
+    if (!this.stroke && !this.loading) this.enqueueHistory('redo');
   }
 
   /** Resolves when queued undo/redo steps have been applied. */
@@ -455,10 +608,17 @@ export class Engine implements StrokeSink {
     this.ro.disconnect();
     this.ac.abort();
     engineStats.running = false;
+    // Free the context itself once the canvas has really left the page. (Under StrictMode the
+    // same canvas is mounted again right away, and the next Engine reuses its context.)
+    const gl = this.gl;
+    setTimeout(() => {
+      if (!this.canvas.isConnected) gl.getExtension('WEBGL_lose_context')?.loseContext();
+    }, 0);
     if (this.lost) return;
     // No loseContext(): under StrictMode a new Engine reuses this canvas's context.
     for (const entry of this.captures.keys()) entry.pending?.(); // frees the readback buffers
     this.thumbnailer.dispose();
+    this.galleryThumbnailer?.dispose();
     this.dabs.dispose();
     this.presenter.dispose();
     this.compositor.dispose();
@@ -473,6 +633,7 @@ export class Engine implements StrokeSink {
   begin(s: InputSample, opts: { pointerType: string; eraser: boolean; barrel: boolean }) {
     if (this.eyedropperArmed || opts.barrel) return this.startPick(s.x, s.y);
     if (this.pending) this.renderNow(); // pen lifted and touched down within one frame
+    if (this.loading) return this.notice('Still opening…');
     const doc = documentStore.getState();
     const layer = doc.layers[activeIndex(doc)];
     if (!layer) return;
@@ -791,7 +952,9 @@ export class Engine implements StrokeSink {
   // ── History ─────────────────────────────────────────────────────────────────
 
   private pushHistory(entry: HistoryEntry) {
+    for (const [layerId, tiles] of entry.pixels) this.trackTiles(layerId, tiles);
     this.history.push(entry);
+    this.opts.onChange?.();
     clearTimeout(this.compressTimer);
     this.compressTimer = setTimeout(() => void this.compressIdle(), COMPRESS_DELAY_MS);
   }
@@ -804,6 +967,7 @@ export class Engine implements StrokeSink {
       this.captures.delete(entry);
       const tiles = capture.finish();
       if (tiles.size > 0) entry.pixels.set(layerId, tiles);
+      this.trackTiles(layerId, tiles);
       this.history.updateBytes(entry);
     };
     this.captures.set(entry, capture);
@@ -859,6 +1023,7 @@ export class Engine implements StrokeSink {
     for (const [layerId, tiles] of writes) {
       const target = this.layers.get(layerId);
       if (target) this.tileIO.write(target, tiles);
+      this.trackUnsaved(layerId, tiles);
     }
     if (direction === 'undo') this.history.stepBack();
     else this.history.stepForward();
@@ -866,6 +1031,21 @@ export class Engine implements StrokeSink {
     this.markDirty('all');
     this.markThumbs([...writes.keys()]);
     this.notice(`${direction === 'undo' ? 'Undo' : 'Redo'}: ${entry.label}`);
+    this.opts.onChange?.();
+  }
+
+  /** A recorded change's result is the tiles' new content. */
+  private trackTiles(layerId: string, tiles: LayerTiles) {
+    const latest = new Map<number, TileData>();
+    for (const [key, change] of tiles) latest.set(key, change.after);
+    this.trackUnsaved(layerId, latest);
+  }
+
+  private trackUnsaved(layerId: string, tiles: ReadonlyMap<number, TileData>) {
+    if (tiles.size === 0) return;
+    let layer = this.unsaved.get(layerId);
+    if (!layer) this.unsaved.set(layerId, (layer = new Map()));
+    for (const [key, data] of tiles) layer.set(key, data);
   }
 
   /** Deflates tiles of older steps once drawing pauses. */
