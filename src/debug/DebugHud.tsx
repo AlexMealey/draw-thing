@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { engineStats } from '../engine/stats';
 import { currentPlatform, OS_LABEL } from '../platform/env';
 import styles from './DebugHud.module.css';
 
@@ -22,6 +23,7 @@ interface Snapshot {
   viewport: string;
   online: boolean;
   swControlled: boolean;
+  engine: typeof engineStats;
 }
 
 type PE = PointerEvent & { altitudeAngle?: number; azimuthAngle?: number };
@@ -98,6 +100,7 @@ export function DebugHud() {
         viewport: `${innerWidth}×${innerHeight} @${devicePixelRatio}x`,
         online: navigator.onLine,
         swControlled: navigator.serviceWorker?.controller != null,
+        engine: { ...engineStats },
       });
       frames = events = samples = worst = 0;
     }, 500);
@@ -112,6 +115,7 @@ export function DebugHud() {
   }, []);
 
   const p = snap?.pointer;
+  const e = snap?.engine;
   const lines = [
     `${OS_LABEL[platform.os]} · ${platform.standalone ? 'installed' : 'tab'} · ${snap?.viewport ?? ''}`,
     `fps ${snap?.fps.toFixed(0) ?? '–'} · worst frame ${snap?.worstFrameMs.toFixed(1) ?? '–'} ms`,
@@ -119,6 +123,12 @@ export function DebugHud() {
     p
       ? `${p.type} btn=${p.buttons} p=${p.pressure.toFixed(3)} tilt=${p.tiltX}/${p.tiltY} alt=${deg(p.altitude)} az=${deg(p.azimuth)}`
       : 'pointer –',
+    e?.running
+      ? `latency ${e.latencyMs.toFixed(1)} ms · dabs/frame ${e.dabsPerFrame} · cpu ${e.frameCpuMs.toFixed(2)} ms`
+      : 'engine –',
+    e?.running
+      ? `doc ${e.docSize} · zoom ${e.zoomPercent.toFixed(0)}% · rot ${e.rotationDeg.toFixed(0)}° · desync ${e.desynchronized ? 'yes' : 'no'}`
+      : '',
     `webgl2 ${caps.webgl2 ? 'yes' : 'NO'} · coalesced ${caps.coalesced ? 'yes' : 'no'} · predicted ${caps.predicted ? 'yes' : 'no'}`,
     `sw ${snap?.swControlled ? 'controlling' : 'none'} · ${snap?.online === false ? 'offline' : 'online'} · storage ${persisted === null ? '?' : persisted ? 'persisted' : 'best-effort'}`,
   ];
