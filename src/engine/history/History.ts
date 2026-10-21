@@ -128,6 +128,16 @@ export class History {
     this.onChange();
   }
 
+  /** Drops one entry (its pixels were lost before they were read back). */
+  remove(entry: HistoryEntry) {
+    const i = this.entries.indexOf(entry);
+    if (i < 0) return;
+    this.entries.splice(i, 1);
+    this.total -= entry.bytes;
+    if (i < this.cursor) this.cursor--;
+    this.onChange();
+  }
+
   stepBack() {
     if (this.cursor > 0) this.cursor--;
     this.onChange();

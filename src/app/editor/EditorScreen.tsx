@@ -32,6 +32,12 @@ interface Props {
   /** Saves now; resolves when it's written. */
   flush: () => Promise<void>;
   onNotice: (message: string) => void;
+  /** After each autosave. */
+  onSaved: () => void;
+  /** Shows how to install the app (absent once it's installed). */
+  onInstall?: () => void;
+  /** Restarts into a waiting new version (absent unless there is one). */
+  onUpdate?: () => void;
   onGallery: () => void;
   onNewCanvas: () => void;
 }
@@ -49,6 +55,9 @@ export function EditorScreen({
   onSession,
   flush,
   onNotice,
+  onSaved,
+  onInstall,
+  onUpdate,
   onGallery,
   onNewCanvas,
 }: Props) {
@@ -175,6 +184,7 @@ export function EditorScreen({
           onNotice={onNotice}
           onEyedropper={setLoupe}
           onColorPicked={onColorPicked}
+          onSaved={onSaved}
           exposeForTests={debug}
         />
       </main>
@@ -223,6 +233,14 @@ export function EditorScreen({
               flush={flush}
               onNotice={onNotice}
               onClose={close}
+              onInstall={
+                onInstall &&
+                (() => {
+                  close();
+                  onInstall();
+                })
+              }
+              onUpdate={onUpdate}
               onNewCanvas={() => {
                 close();
                 onNewCanvas();

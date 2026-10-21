@@ -1,45 +1,43 @@
 import { useEffect } from 'react';
-import { useRegisterSW } from 'virtual:pwa-register/react';
+import { pwaStore, usePwa } from '../platform/pwa';
 import styles from './UpdatePrompt.module.css';
 
-/**
- * Service worker registration plus "offline ready" / "update ready" toasts.
- * From Phase 5 on, the update toast should only appear in the gallery or right after a save
- * (ROADMAP §1.3), so an update never interrupts a drawing.
- */
-export function UpdatePrompt() {
-  const {
-    needRefresh: [needRefresh, setNeedRefresh],
-    offlineReady: [offlineReady, setOfflineReady],
-    updateServiceWorker,
-  } = useRegisterSW({
-    onRegisterError(error) {
-      console.error('Service worker registration failed', error);
-    },
-  });
+interface Props {
+  /**
+   * Whether the "update ready" toast may show now. The app only asks in the gallery or right
+   * after a save (ROADMAP §1.3), so it never interrupts a drawing.
+   */
+  askUpdate: boolean;
+  /** Saves, then reloads into the new version. */
+  onRestart: () => void;
+  onLater: () => void;
+}
+
+/** "Ready to work offline" and "update ready" toasts. */
+export function UpdatePrompt({ askUpdate, onRestart, onLater }: Props) {
+  const updateReady = usePwa((s) => s.updateReady);
+  const offlineReady = usePwa((s) => s.offlineReady);
 
   useEffect(() => {
     if (!offlineReady) return;
-    const id = setTimeout(() => setOfflineReady(false), 4000);
+    const id = setTimeout(() => pwaStore.setState({ offlineReady: false }), 4000);
     return () => clearTimeout(id);
-  }, [offlineReady, setOfflineReady]);
+  }, [offlineReady]);
 
-  if (!needRefresh && !offlineReady) return null;
-
-  const dismiss = () => {
-    setNeedRefresh(false);
-    setOfflineReady(false);
-  };
+  const update = updateReady && askUpdate;
+  if (!update && !offlineReady) return null;
 
   return (
     <div role="status" className={styles.toast}>
-      <span>{needRefresh ? 'A new version is ready.' : 'Ready to work offline.'}</span>
-      {needRefresh && (
-        <button className={styles.primary} onClick={() => void updateServiceWorker()}>
-          Reload
+      <span>{update ? 'A new version is ready.' : 'Ready to work offline.'}</span>
+      {update && (
+        <button className={styles.primary} onClick={onRestart}>
+          Restart
         </button>
       )}
-      <button onClick={dismiss}>{needRefresh ? 'Later' : 'OK'}</button>
+      <button onClick={update ? onLater : () => pwaStore.setState({ offlineReady: false })}>
+        {update ? 'Later' : 'OK'}
+      </button>
     </div>
   );
 }

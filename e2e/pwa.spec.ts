@@ -11,8 +11,17 @@ test('serves an installable web app manifest', async ({ page, request }) => {
     display: string;
     start_url: string;
     icons: { sizes: string; purpose?: string }[];
+    file_handlers: { action: string; accept: Record<string, string[]> }[];
   };
-  expect(manifest).toMatchObject({ display: 'standalone', start_url: '/?source=pwa', scope: '/' });
+  expect(manifest).toMatchObject({
+    display: 'standalone',
+    display_override: ['window-controls-overlay', 'standalone'],
+    start_url: '/?source=pwa',
+    scope: '/',
+    launch_handler: { client_mode: ['focus-existing', 'auto'] },
+  });
+  const extensions = Object.values(manifest.file_handlers[0]?.accept ?? {}).flat();
+  expect(extensions).toEqual(expect.arrayContaining(['.drawthing', '.psd', '.png', '.jpg']));
   expect(manifest.icons.some((i) => i.sizes === '192x192')).toBe(true);
   expect(manifest.icons.some((i) => i.sizes === '512x512' && i.purpose === 'maskable')).toBe(true);
   await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveCount(1);

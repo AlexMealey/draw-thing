@@ -60,7 +60,15 @@ export interface EngineOptions {
   onTap?: (fingers: number) => void;
   /** Short user-facing message, e.g. why a stroke was refused. */
   onNotice?: (message: string) => void;
+  /** The GPU dropped the context (memory pressure, backgrounding, driver reset). */
   onContextLost?: () => void;
+  /**
+   * After the context comes back: the document's saved tiles, to rebuild the layers from
+   * (IndexedDB is the source of truth). Unsaved changes must be saved before it resolves.
+   */
+  restoreTiles?: () => Promise<ReadonlyMap<string, ReadonlyMap<number, TileData>>>;
+  /** The layers are rebuilt (ok) or couldn't be (the app should reload). */
+  onContextRestored?: (ok: boolean) => void;
   /** Document size in px; defaults to the screen size (× device pixel ratio). */
   docSize?: { w: number; h: number };
   /** Opens a saved document (its size wins over `docSize`); pixels follow via loadTiles(). */
@@ -133,11 +141,12 @@ export class Engine implements StrokeSink {
 
   private gl: WebGL2RenderingContext;
   private layers = new Map<string, Target>();
-  private strokeBuf: Target;
-  private quad: QuadPass;
-  private compositor: Compositor;
-  private dabs: DabRenderer;
-  private presenter: Presenter;
+  // GPU resources, created by createGpu() (again after a context reset).
+  private strokeBuf!: Target;
+  private quad!: QuadPass;
+  private compositor!: Compositor;
+  private dabs!: DabRenderer;
+  private presenter!: Presenter;
   private view = new ViewTransform();
   private input: PointerInput;
   private ro: ResizeObserver;
@@ -146,7 +155,7 @@ export class Engine implements StrokeSink {
 
   private viewW: number;
   private viewH: number;
-  private fboClip: Float32Array;
+  private fboClip!: Float32Array;
   private screenClip = new Float32Array(9);
   private gestureBase: Affine = identity();
   private insets: Insets;
@@ -187,7 +196,7 @@ export class Engine implements StrokeSink {
   /** True while a saved document's tiles are being uploaded; input waits. */
   private loading = false;
 
-  private thumbnailer: Thumbnailer;
+  private thumbnailer!: Thumbnailer;
   private galleryThumbnailer: Thumbnailer | null = null;
   private thumbsDirty = new Set<string>();
   private thumbTimer: ReturnType<typeof setTimeout> | undefined;
@@ -202,6 +211,8 @@ export class Engine implements StrokeSink {
   private raf = 0;
   private disposed = false;
   private lost = false;
+  /** Bumped on every context loss, so work started against the old textures stops. */
+  private gpuGeneration = 0;
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -219,14 +230,8 @@ export class Engine implements StrokeSink {
     const size = saved ? { w: saved.width, h: saved.height } : (opts.docSize ?? screenDocSize());
     this.docW = Math.max(1, Math.min(cap, Math.round(size.w)));
     this.docH = Math.max(1, Math.min(cap, Math.round(size.h)));
-    this.strokeBuf = createTarget(gl, this.docW, this.docH, strokeFormat(gl));
-    this.fboClip = targetClip(this.strokeBuf);
-    this.quad = new QuadPass(gl);
-    this.compositor = new Compositor(gl, this.quad, this.docW, this.docH);
-    this.dabs = new DabRenderer(gl);
-    this.presenter = new Presenter(gl, this.quad);
+    this.createGpu();
     this.tileIO = new TileIO(gl, tileGrid(this.docW, this.docH));
-    this.thumbnailer = new Thumbnailer(gl, this.docW, this.docH);
     thumbnailStore.setState({ urls: {} });
     this.history = new History(
       { maxBytes: historyBudgetBytes(), maxEntries: 250 },
@@ -284,6 +289,7 @@ export class Engine implements StrokeSink {
     window.addEventListener('wheel', this.onWheel, { passive: false, signal });
     window.addEventListener('keydown', this.onKey, { signal });
     canvas.addEventListener('webglcontextlost', this.onContextLost, { signal });
+    canvas.addEventListener('webglcontextrestored', this.onContextRestored, { signal });
     // Space+drag and middle-mouse drag pan. Capture-phase listeners on the canvas run before
     // PointerInput's, so a pan never reaches the stroke pipeline.
     const capture = { capture: true, passive: false, signal } as const;
@@ -460,13 +466,14 @@ export class Engine implements StrokeSink {
   async loadTiles(tiles: ReadonlyMap<string, ReadonlyMap<number, TileData>>): Promise<void> {
     const grid = this.tileIO.grid;
     const count = grid.cols * grid.rows;
+    const generation = this.gpuGeneration;
     this.loading = true;
     try {
       for (const [layerId, layer] of tiles) {
         const raw = new Map<number, Uint8Array | null>();
         for (const [key, tile] of layer) {
           const data = await inflateTile(tile);
-          if (this.disposed || this.lost) return;
+          if (this.disposed || this.lost || generation !== this.gpuGeneration) return;
           if (!Number.isInteger(key) || key < 0 || key >= count) continue;
           const r = tileRect(grid, key);
           if (data && data.byteLength !== r.w * r.h * 4) continue; // damaged tile
@@ -480,7 +487,8 @@ export class Engine implements StrokeSink {
         this.markThumbs([layerId]);
       }
     } finally {
-      this.loading = false;
+      // After a context loss, restoring owns the flag.
+      if (generation === this.gpuGeneration) this.loading = false;
     }
   }
 
@@ -493,10 +501,13 @@ export class Engine implements StrokeSink {
     return out;
   }
 
-  /** Every non-empty tile of every layer (a full save). Blocks on GPU readback. */
-  allTiles(): Map<string, Map<number, TileData>> {
+  /**
+   * Every non-empty tile of every layer (a full save). Blocks on GPU readback. Null while the
+   * pixels can't be read (after a context loss, until they're restored).
+   */
+  allTiles(): Map<string, Map<number, TileData>> | null {
+    if (this.disposed || this.lost || this.loading) return null;
     const out = new Map<string, Map<number, TileData>>();
-    if (this.disposed || this.lost) return out;
     for (const [id, target] of this.layers) out.set(id, this.tileIO.readAll(target));
     return out;
   }
@@ -571,11 +582,11 @@ export class Engine implements StrokeSink {
   }
 
   undo() {
-    if (!this.stroke && !this.loading) this.enqueueHistory('undo');
+    if (!this.stroke && !this.loading && !this.lost) this.enqueueHistory('undo');
   }
 
   redo() {
-    if (!this.stroke && !this.loading) this.enqueueHistory('redo');
+    if (!this.stroke && !this.loading && !this.lost) this.enqueueHistory('redo');
   }
 
   /** Resolves when queued undo/redo steps have been applied. */
@@ -628,11 +639,25 @@ export class Engine implements StrokeSink {
     deleteTarget(this.gl, this.strokeBuf);
   }
 
+  /** Creates the GPU resources other than layers; again after a context reset. */
+  private createGpu() {
+    const gl = this.gl;
+    this.strokeBuf = createTarget(gl, this.docW, this.docH, strokeFormat(gl));
+    this.fboClip = targetClip(this.strokeBuf);
+    this.quad = new QuadPass(gl);
+    this.compositor = new Compositor(gl, this.quad, this.docW, this.docH);
+    this.dabs = new DabRenderer(gl);
+    this.presenter = new Presenter(gl, this.quad);
+    this.thumbnailer = new Thumbnailer(gl, this.docW, this.docH);
+    this.galleryThumbnailer = null;
+  }
+
   // ── StrokeSink (called by PointerInput) ─────────────────────────────────────
 
   begin(s: InputSample, opts: { pointerType: string; eraser: boolean; barrel: boolean }) {
     if (this.eyedropperArmed || opts.barrel) return this.startPick(s.x, s.y);
     if (this.pending) this.renderNow(); // pen lifted and touched down within one frame
+    if (this.lost) return;
     if (this.loading) return this.notice('Still opening…');
     const doc = documentStore.getState();
     const layer = doc.layers[activeIndex(doc)];
@@ -1268,14 +1293,57 @@ export class Engine implements StrokeSink {
     this.requestFrame();
   };
 
-  // Restoring the context (rebuilding textures from saved tiles) arrives in Phase 7.
+  // Every texture dies with the context, but the document doesn't: its metadata is in the store,
+  // its undo history in CPU memory and its pixels in IndexedDB (the autosaver writes out what's
+  // unsaved). Only a stroke whose readback hadn't finished is lost.
   private onContextLost = (e: Event) => {
-    e.preventDefault();
+    e.preventDefault(); // lets the browser restore it
     this.lost = true;
+    this.loading = true; // until the layers are back
+    this.gpuGeneration++;
     cancelAnimationFrame(this.raf);
     this.raf = 0;
+    clearTimeout(this.thumbTimer);
+    if (this.picking) this.finishPick(false);
+    this.stroke = null;
+    this.pending = null;
+    this.queue.length = 0;
+    this.predicted = [];
+    for (const entry of this.captures.keys()) {
+      entry.pending = undefined;
+      this.history.remove(entry);
+    }
+    this.captures.clear();
+    engineStats.contextLosses++;
     this.opts.onContextLost?.();
   };
+
+  private onContextRestored = () => {
+    if (this.disposed) return;
+    const generation = this.gpuGeneration;
+    this.layers.clear(); // the old handles are dead; nothing to delete
+    this.createGpu();
+    this.lost = false;
+    this.loading = true;
+    this.syncLayers(documentStore.getState());
+    this.docDirty = 'all';
+    this.requestFrame();
+    void this.reloadLayers(generation);
+  };
+
+  private async reloadLayers(generation: number) {
+    let ok = true;
+    try {
+      const tiles = await this.opts.restoreTiles?.();
+      if (generation !== this.gpuGeneration) return; // lost again meanwhile
+      if (tiles) await this.loadTiles(tiles);
+      else this.loading = false;
+    } catch (err) {
+      console.error('Couldn’t restore the canvas', err);
+      ok = false;
+    }
+    if (generation === this.gpuGeneration && !this.disposed) this.opts.onContextRestored?.(ok);
+  }
 }
 
 const toPt = (s: InputSample): Pt => ({ x: s.x, y: s.y, p: s.pressure });

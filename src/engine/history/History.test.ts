@@ -25,6 +25,22 @@ const props = (key: string, time: number, after: string): HistoryEntry => ({
 });
 
 describe('History', () => {
+  it('removes an entry and keeps the cursor on the same step', () => {
+    const h = new History({ maxBytes: 1e9, maxEntries: 100 });
+    const a = pixels('a', 4);
+    h.push(a);
+    h.push(pixels('b', 4));
+    h.push(pixels('c', 4));
+    h.stepBack(); // c can be redone
+    h.remove(a);
+    expect(h.size).toBe(2);
+    expect(h.totalBytes).toBe(8);
+    expect(h.peekUndo()?.label).toBe('b');
+    expect(h.peekRedo()?.label).toBe('c');
+    h.remove(a); // no longer there
+    expect(h.size).toBe(2);
+  });
+
   it('moves a cursor through undo and redo, and push drops the redo branch', () => {
     const h = new History({ maxBytes: 1e9, maxEntries: 100 });
     h.push(pixels('a', 4));

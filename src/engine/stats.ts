@@ -22,6 +22,8 @@ export const engineStats = {
   gpuMB: 0,
   historySteps: 0,
   historyMB: 0,
+  /** WebGL context losses survived this session. */
+  contextLosses: 0,
 };
 
 export const ema = (prev: number, next: number, k = 0.2) =>

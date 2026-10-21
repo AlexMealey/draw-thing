@@ -34,6 +34,8 @@ interface Props {
   onDelete: (id: string) => Promise<void>;
   onRenamed: (id: string, name: string) => void;
   onNotice: (message: string) => void;
+  /** Shows how to install the app, where that's worth a button. */
+  onInstall?: () => void;
 }
 
 export function GalleryScreen({
@@ -45,6 +47,7 @@ export function GalleryScreen({
   onDelete,
   onRenamed,
   onNotice,
+  onInstall,
 }: Props) {
   const [picking, setPicking] = useState(startNew);
   const [projects, setProjects] = useState<Listed[] | null>(null);
@@ -107,6 +110,11 @@ export function GalleryScreen({
       <header className={styles.header}>
         <h1>DrawThing</h1>
         <div className={styles.headerButtons}>
+          {onInstall && (
+            <button className={ui.textButton} onClick={onInstall}>
+              Install app
+            </button>
+          )}
           <button className={ui.textButton} onClick={() => void importFile()} disabled={!!busy}>
             Import
           </button>

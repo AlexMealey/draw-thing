@@ -9,8 +9,11 @@ import { saveProject, setLastOpen, type TileMap } from './projects';
 export interface SaveSource {
   /** Tiles changed since the last call (latest content wins), and forgets them. */
   takeChanges(): Map<string, Map<number, TileData>>;
-  /** Every non-empty tile of every layer; for recovering after a failed save. */
-  allTiles(): Map<string, Map<number, TileData>>;
+  /**
+   * Every non-empty tile of every layer, for recovering after a failed save; null while the
+   * pixels can't be read (graphics reset, still opening).
+   */
+  allTiles(): Map<string, Map<number, TileData>> | null;
   /** The composited document, small, for the gallery. */
   galleryThumbnail(): ImageData | null;
 }
@@ -45,6 +48,8 @@ export class Autosaver {
       /** Name used if this save creates the project. */
       name: string;
       onError?: (err: unknown) => void;
+      /** After each successful save. */
+      onSaved?: () => void;
     },
   ) {
     this.stored = new Set(opts.storedLayers);
@@ -94,12 +99,22 @@ export class Autosaver {
   }
 
   private save(final: boolean): Promise<void> {
-    if (this.closed || (!this.dirty && !this.full)) return this.chain;
-    this.dirty = false;
+    if (this.closed) return this.chain;
     // Everything that touches the engine happens now, synchronously; the rest is async.
+    // Taking the changes first also lands a stroke whose pen just lifted: its commit is what
+    // marks the document changed, so checking `dirty` before it would skip that stroke.
+    const changes = this.source.takeChanges();
+    clearTimeout(this.timer); // that commit scheduled another save; this one covers it
+    if (!this.dirty && !this.full && changes.size === 0) return this.chain;
+    this.dirty = false;
     const full = this.full;
-    const changes = this.source.takeChanges(); // also lands a stroke that just ended
-    const tiles = full ? this.source.allTiles() : changes;
+    const all = full ? this.source.allTiles() : null;
+    if (full && !all) {
+      // Writing a partial set would wipe stored tiles: wait until the pixels are readable.
+      this.dirty = true;
+      return this.chain;
+    }
+    const tiles = all ?? changes;
     const doc = toSaved(documentStore.getState());
     const now = performance.now();
     const thumbImage =
@@ -134,6 +149,7 @@ export class Autosaver {
           // installed PWAs on iOS; Chromium decides by engagement).
           void navigator.storage?.persist?.().catch(() => {});
         }
+        this.opts.onSaved?.();
       } catch (err) {
         // These tiles are no longer tracked, so rewrite everything next time.
         this.full = true;

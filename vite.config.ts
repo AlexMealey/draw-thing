@@ -40,6 +40,21 @@ export default defineConfig({
         orientation: 'any',
         background_color: '#1c1c1e',
         theme_color: '#1c1c1e',
+        // "Open with DrawThing" on Windows/ChromeOS (installed app). Files land in launchQueue.
+        file_handlers: [
+          {
+            action: '/?source=file',
+            accept: {
+              'application/x-drawthing': ['.drawthing'],
+              'image/vnd.adobe.photoshop': ['.psd'],
+              'image/png': ['.png'],
+              'image/jpeg': ['.jpg', '.jpeg'],
+              'image/webp': ['.webp'],
+            },
+          },
+        ],
+        // Opening a file while the app runs hands it to that window instead of a new one.
+        launch_handler: { client_mode: ['focus-existing', 'auto'] },
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Engine } from '../../engine/Engine';
 import { tileGrid } from '../../engine/history/tiles';
 import { chooseFile, deliver } from '../../files/deliver';
@@ -8,7 +8,7 @@ import { IMAGE_ACCEPT } from '../../files/importFile';
 import { documentStore, useDocument } from '../../state/documentStore';
 import { toolStore, useTools } from '../../state/toolStore';
 import type { OpenProject } from '../project';
-import { percent } from '../ui/format';
+import { fileSize, percent } from '../ui/format';
 import { Panel } from '../ui/Panel';
 import { SliderRow } from '../ui/SliderRow';
 import ui from '../ui/ui.module.css';
@@ -20,6 +20,10 @@ interface Props {
   onNotice: (message: string) => void;
   onClose: () => void;
   onNewCanvas: () => void;
+  /** Shows how to install the app (absent once installed). */
+  onInstall?: () => void;
+  /** Restarts into a waiting new version (absent unless there is one). */
+  onUpdate?: () => void;
 }
 
 const GESTURES: [string, string][] = [
@@ -42,7 +46,16 @@ const FORMATS: { id: ExportFormat; label: string; hint: string }[] = [
   { id: 'drawthing', label: 'DrawThing', hint: 'Everything, to back up or move' },
 ];
 
-export function ActionsPanel({ project, engine, flush, onNotice, onClose, onNewCanvas }: Props) {
+export function ActionsPanel({
+  project,
+  engine,
+  flush,
+  onNotice,
+  onClose,
+  onNewCanvas,
+  onInstall,
+  onUpdate,
+}: Props) {
   const width = useDocument((s) => s.width);
   const height = useDocument((s) => s.height);
   const layers = useDocument((s) => s.layers.length);
@@ -154,6 +167,24 @@ export function ActionsPanel({ project, engine, flush, onNotice, onClose, onNewC
         </p>
       )}
 
+      <h3 className={ui.section}>App</h3>
+      {onUpdate && (
+        <p style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '4px 0' }}>
+          <span style={{ flex: 1, fontSize: 14 }}>A new version is ready.</span>
+          <button className={`${ui.textButton} ${ui.primary}`} onClick={onUpdate}>
+            Restart
+          </button>
+        </p>
+      )}
+      {onInstall && (
+        <p style={{ margin: '4px 0' }}>
+          <button className={ui.textButton} onClick={onInstall}>
+            Install app…
+          </button>
+        </p>
+      )}
+      <StorageStatus onNotice={onNotice} />
+
       <h3 className={ui.section}>Preferences</h3>
       <label className={ui.switch}>
         Sidebar on the right
@@ -190,5 +221,58 @@ export function ActionsPanel({ project, engine, flush, onNotice, onClose, onNewC
         ))}
       </dl>
     </Panel>
+  );
+}
+
+interface StorageInfo {
+  used: number;
+  quota: number;
+  persisted: boolean;
+}
+
+/** How much the artwork takes up, and whether the browser may clear it under pressure. */
+function StorageStatus({ onNotice }: { onNotice: (message: string) => void }) {
+  const [info, setInfo] = useState<StorageInfo | null>(null);
+  const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    const storage = navigator.storage as StorageManager | undefined;
+    if (!storage?.estimate) return;
+    let cancelled = false;
+    Promise.all([storage.estimate(), storage.persisted?.() ?? false])
+      .then(([estimate, persisted]) => {
+        if (cancelled) return;
+        setInfo({ used: estimate.usage ?? 0, quota: estimate.quota ?? 0, persisted });
+      })
+      .catch(() => {}); // not worth a message
+    return () => {
+      cancelled = true;
+    };
+  }, [version]);
+
+  if (!info) return null;
+
+  const keep = async () => {
+    const granted = await navigator.storage.persist().catch(() => false);
+    setVersion((v) => v + 1);
+    if (!granted) onNotice('The browser didn’t allow it yet; installing the app usually does');
+  };
+
+  return (
+    <>
+      <p style={{ margin: '4px 0', fontSize: 14 }}>
+        Storage: {fileSize(info.used)} of {fileSize(info.quota)} ·{' '}
+        <span style={{ color: 'var(--color-text-muted)' }}>
+          {info.persisted ? 'kept safe from clearing' : 'may be cleared if space runs low'}
+        </span>
+      </p>
+      {!info.persisted && (
+        <p style={{ margin: '4px 0' }}>
+          <button className={ui.textButton} onClick={() => void keep()}>
+            Keep artwork safe
+          </button>
+        </p>
+      )}
+    </>
   );
 }

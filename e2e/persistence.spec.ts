@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect, type Page, test } from '@playwright/test';
 import { readPsd } from 'ag-psd';
-import { hash } from './hooks';
+import { hash, mouseUp } from './hooks';
 
 // Phase 6: artwork survives a reload, and exports/imports round-trip.
 
@@ -14,7 +14,7 @@ async function stroke(page: Page, y: number) {
   await page.mouse.move(200, y);
   await page.mouse.down();
   for (let i = 1; i <= 10; i++) await page.mouse.move(200 + i * 60, y + Math.sin(i) * 30);
-  await page.mouse.up();
+  await mouseUp(page);
 }
 
 test.beforeEach(async ({ page }) => {

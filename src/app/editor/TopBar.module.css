@@ -34,3 +34,24 @@
 .swatch[aria-expanded='true'] {
   border-color: var(--color-accent);
 }
+
+/*
+ * Installed on desktop with the title bar hidden (manifest `display_override`): the top bar
+ * becomes the title bar. Its buttons stay clear of the window controls, and the empty space
+ * between them drags the window.
+ */
+@media (display-mode: window-controls-overlay) {
+  .topbar {
+    padding-left: calc(env(titlebar-area-x, 0px) + var(--space-2));
+    padding-right: calc(
+      100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + var(--space-2)
+    );
+    app-region: drag;
+    -webkit-app-region: drag;
+  }
+
+  .topbar button {
+    app-region: no-drag;
+    -webkit-app-region: no-drag;
+  }
+}

@@ -5,7 +5,7 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "types": ["vite/client", "vite-plugin-pwa/react"],
+    "types": ["vite/client", "vite-plugin-pwa/client"],
     "jsx": "react-jsx",
     "useDefineForClassFields": true,
     "verbatimModuleSyntax": true,

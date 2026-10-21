@@ -27,6 +27,8 @@ export interface ToolState {
   sidebarRight: boolean;
   /** Paint with a finger until a pen has been used. */
   fingerDrawing: boolean;
+  /** The install coach has been shown (it opens by itself only once). */
+  installCoachSeen: boolean;
 
   setMode(mode: ToolMode): void;
   selectPreset(id: string): void;
@@ -35,7 +37,9 @@ export interface ToolState {
   resetOverride(presetId: string): void;
   /** `commit` also records the color in the recent colors. */
   setColor(color: string, commit?: boolean): void;
-  setPrefs(patch: Partial<Pick<ToolState, 'sidebarRight' | 'fingerDrawing'>>): void;
+  setPrefs(
+    patch: Partial<Pick<ToolState, 'sidebarRight' | 'fingerDrawing' | 'installCoachSeen'>>,
+  ): void;
 }
 
 const MAX_RECENT = 10;
@@ -87,6 +91,7 @@ export const toolStore = createStore<ToolState>()(
       recentColors: [],
       sidebarRight: false,
       fingerDrawing: true,
+      installCoachSeen: false,
 
       setMode: (mode) => set({ mode }),
       selectPreset: (id) => set({ presetIds: { ...get().presetIds, [get().mode]: id } }),
@@ -126,6 +131,7 @@ export const toolStore = createStore<ToolState>()(
         recentColors: s.recentColors,
         sidebarRight: s.sidebarRight,
         fingerDrawing: s.fingerDrawing,
+        installCoachSeen: s.installCoachSeen,
       }),
     },
   ),

@@ -274,3 +274,21 @@
   margin: 0 0 var(--space-3);
   color: #ffd60a;
 }
+
+/* Installed on desktop without a title bar: the header drags the window (see TopBar). */
+@media (display-mode: window-controls-overlay) {
+  .header {
+    min-height: env(titlebar-area-height, 0px);
+    padding-left: calc(env(titlebar-area-x, 0px) + var(--space-5));
+    padding-right: calc(
+      100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + var(--space-5)
+    );
+    app-region: drag;
+    -webkit-app-region: drag;
+  }
+
+  .header button {
+    app-region: no-drag;
+    -webkit-app-region: no-drag;
+  }
+}

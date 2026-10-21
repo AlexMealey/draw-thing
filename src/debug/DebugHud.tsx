@@ -130,7 +130,7 @@ export function DebugHud() {
       ? `doc ${e.docSize} · zoom ${e.zoomPercent.toFixed(0)}% · rot ${e.rotationDeg.toFixed(0)}° · desync ${e.desynchronized ? 'yes' : 'no'} · stroke ${e.strokeFormat}`
       : '',
     e?.running
-      ? `layers ${e.layers}/${e.maxLayers} · gpu ≈${e.gpuMB} MB · history ${e.historySteps} steps, ${e.historyMB.toFixed(1)} MB`
+      ? `layers ${e.layers}/${e.maxLayers} · gpu ≈${e.gpuMB} MB · history ${e.historySteps} steps, ${e.historyMB.toFixed(1)} MB · resets ${e.contextLosses}`
       : '',
     `webgl2 ${caps.webgl2 ? 'yes' : 'NO'} · coalesced ${caps.coalesced ? 'yes' : 'no'} · predicted ${caps.predicted ? 'yes' : 'no'}`,
     `sw ${snap?.swControlled ? 'controlling' : 'none'} · ${snap?.online === false ? 'offline' : 'online'} · storage ${persisted === null ? '?' : persisted ? 'persisted' : 'best-effort'}`,

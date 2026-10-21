@@ -122,6 +122,24 @@ stores with `subscribeWithSelector`. React never re-renders during a stroke.
 - Use the File System Access API (`showSaveFilePicker`) for real Save As. Wrap it with `browser-fs-access` so iOS falls back to download or share.
 - `window-controls-overlay` gives a full-bleed canvas in desktop mode. Use `titlebar-area-*` env vars in CSS.
 
+**As built (Phase 7):**
+- **Service worker and updates** (`src/platform/pwa.ts`): registered from `main.tsx` with `virtual:pwa-register`, and it checks for a new version hourly and whenever the app comes back to the foreground. The "A new version is ready" toast only appears in the gallery or after an autosave. *Restart* saves first, then activates the new worker. *Later* holds it back until the gallery next opens. Actions → App has a Restart button whenever an update is waiting.
+- **Install:**
+  - Chromium's `beforeinstallprompt` is held back and offered from an *Install app* button in the gallery and in Actions.
+  - On iPhone and iPad, Safari never prompts, so an `<InstallCoach>` opens once at launch. It walks through Share → Add to Home Screen, warns that the Home Screen app has separate storage, and explains how to move artwork over as .drawthing. It can be reopened from Actions.
+  - `storage.persist()` is also requested on `appinstalled`. Actions → App shows usage, quota and whether storage is persisted, with a *Keep artwork safe* button.
+- **Splash screens and icons** were already generated from `public/logo.svg` in Phase 0 (`pwa-assets.config.ts`).
+- **File handlers:** the manifest declares `.drawthing`, `.psd`, `.png`, `.jpg/.jpeg` and `.webp`. With `launch_handler: focus-existing`, Chromium passes files to the running window through `launchQueue` without reloading it. Each file is imported as a new artwork, and the last one opens.
+- **Window Controls Overlay:** when installed on desktop with the title bar hidden, the top bar (and the gallery header) becomes the title bar. Its buttons stay clear of the window controls via `env(titlebar-area-*)`, and the empty space drags the window (`app-region`).
+- **Microsoft Store:** not packaged. PWABuilder can wrap the deployed URL as an MSIX whenever it's wanted, with no code changes.
+- **Context-loss recovery:**
+  - On `webglcontextlost` the engine drops the in-flight stroke, plus any stroke whose readback hadn't landed (its history step is removed). Input is blocked behind a "Restoring the canvas…" overlay while the autosaver writes out everything unsaved; that data is all in CPU memory.
+  - On `webglcontextrestored` the engine recreates every GPU resource, reloads the layers from IndexedDB and carries on. Undo history is kept, because it lives in CPU memory.
+  - If the context doesn't come back within 5 s, a Reload button appears.
+  - A full save never runs while pixels can't be read: it would wipe stored tiles.
+- **Fix:** a save immediately after pen-up skipped the stroke, because the stroke's commit (which marks the document changed) ran after the dirty check. Autosaver now lands the commit first. This mattered for "app hidden right after a stroke" on iOS.
+- **Tests:** E2E covers context loss and restore (pixels exact, undo and redo exact, still saving afterwards), opening a file through a stubbed `launchQueue`, the iPad install coach, the Chromium install prompt, and the manifest's file handlers. A `mouseUp` helper waits for the page to handle `pointerup`, because Playwright input and `page.evaluate` don't share a queue.
+
 ### 1.4 State management & undo/redo  — [L]
 
 Three tiers, kept strictly apart:

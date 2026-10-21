@@ -110,3 +110,19 @@ export const SettingsIcon = () => (
     <circle cx="10" cy="17" r="2" />
   </Icon>
 );
+
+/** Safari's Share button (a box with an arrow out of the top). */
+export const ShareIcon = (props: SVGProps<SVGSVGElement>) => (
+  <Icon {...props}>
+    <path d="M12 3v12M8 7l4-4 4 4" />
+    <path d="M8.5 10H6.5a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-7a1.5 1.5 0 0 0-1.5-1.5h-2" />
+  </Icon>
+);
+
+/** Add to Home Screen (a plus in a rounded square). */
+export const AddSquareIcon = (props: SVGProps<SVGSVGElement>) => (
+  <Icon {...props}>
+    <rect x="4" y="4" width="16" height="16" rx="4" />
+    <path d="M12 8.5v7M8.5 12h7" />
+  </Icon>
+);
