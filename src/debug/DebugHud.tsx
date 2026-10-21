@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { perf } from '../engine/perf';
 import { engineStats } from '../engine/stats';
 import { currentPlatform, OS_LABEL } from '../platform/env';
 import styles from './DebugHud.module.css';
@@ -24,6 +25,11 @@ interface Snapshot {
   online: boolean;
   swControlled: boolean;
   engine: typeof engineStats;
+  /** p95 over the last ~1000 drawing frames / strokes. */
+  frameP95: number;
+  commitP95: number;
+  longTasks: number;
+  firstFrameMs: number | null;
 }
 
 type PE = PointerEvent & { altitudeAngle?: number; azimuthAngle?: number };
@@ -101,6 +107,10 @@ export function DebugHud() {
         online: navigator.onLine,
         swControlled: navigator.serviceWorker?.controller != null,
         engine: { ...engineStats },
+        frameP95: perf.frame.percentile(95),
+        commitP95: perf.commit.percentile(95),
+        longTasks: perf.longTasks.count,
+        firstFrameMs: perf.firstFrameMs,
       });
       frames = events = samples = worst = 0;
     }, 500);
@@ -131,6 +141,9 @@ export function DebugHud() {
       : '',
     e?.running
       ? `layers ${e.layers}/${e.maxLayers} · gpu ≈${e.gpuMB} MB · history ${e.historySteps} steps, ${e.historyMB.toFixed(1)} MB · resets ${e.contextLosses}`
+      : '',
+    e?.running && snap
+      ? `p95 frame ${snap.frameP95.toFixed(1)} ms · commit ${snap.commitP95.toFixed(1)} ms · long tasks ${snap.longTasks} · gl objects ${e.glObjects} · first frame ${snap.firstFrameMs?.toFixed(0) ?? '–'} ms`
       : '',
     `webgl2 ${caps.webgl2 ? 'yes' : 'NO'} · coalesced ${caps.coalesced ? 'yes' : 'no'} · predicted ${caps.predicted ? 'yes' : 'no'}`,
     `sw ${snap?.swControlled ? 'controlling' : 'none'} · ${snap?.online === false ? 'offline' : 'online'} · storage ${persisted === null ? '?' : persisted ? 'persisted' : 'best-effort'}`,

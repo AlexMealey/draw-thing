@@ -7,6 +7,8 @@ export const engineStats = {
   /** EMA of newest input sample → GPU submit, ms. Display adds ~1 refresh on top. */
   latencyMs: 0,
   dabsPerFrame: 0,
+  /** Dabs drawn into stroke buffers since the page loaded (throughput benchmark). */
+  dabsTotal: 0,
   /** EMA of CPU time spent in the frame callback, ms. */
   frameCpuMs: 0,
   /** 100% = one document pixel per device pixel. */
@@ -22,6 +24,8 @@ export const engineStats = {
   gpuMB: 0,
   historySteps: 0,
   historyMB: 0,
+  /** Live GL objects (textures, buffers, …): must not creep up over a session. */
+  glObjects: 0,
   /** WebGL context losses survived this session. */
   contextLosses: 0,
 };

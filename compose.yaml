@@ -61,6 +61,8 @@ services:
     volumes:
       - ./playwright-report:/app/playwright-report
       - ./test-results:/app/test-results
+      # Reference images of the visual regression suite, written by --update-snapshots.
+      - ./e2e/snapshots:/app/e2e/snapshots
 
 volumes:
   node_modules:

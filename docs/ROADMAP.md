@@ -967,6 +967,33 @@ PWA and persistence
 - [ ] Cloud deployment: the certificate is issued and renewed automatically, and an update deploy shows the update prompt on installed clients.
 - [ ] Export PNG, JPEG and PSD round-trip into Photos, Files, Explorer, Photoshop and Krita. `.drawthing` re-imports losslessly.
 
+**As built (Phase 8):** the procedures and the results log are in [QA.md](QA.md).
+- **Lab page** (`?lab`, lazy-loaded, 7 KB): a scratch canvas (default 2732 × 2048; `&w=…&h=…`) that never touches saved artwork. It holds the benchmark suite, the 30-minute soak, stroke recording and replay, and `window.__lab` for tests. *Run benchmarks* uses §7.1's settings: 20 layers, a 400 px soft brush at 5% spacing, drawn in the middle of the stack so both compositor caches are in use. The report can be copied or saved as JSON.
+- **Instrumentation:**
+  - `src/engine/perf.ts` keeps ring buffers of frame CPU, commit, undo/redo and autosave timings, counts long tasks, and records the time to first frame.
+  - `src/engine/gl/tracking.ts` wraps each context's create and delete calls to count live GL objects. The leak check compares that count before and after layer churn (add, stroke, duplicate, merge, undo, redo, flatten, delete).
+  - The HUD shows the p95s, long tasks, GL objects and first frame.
+- **Measurement details:**
+  - GPU work is measured by forcing a 1-pixel readback (`engine.gpuSync()`).
+  - Frame time is reported as CPU p95 and as the rAF interval p95, which also catches GPU-bound frames.
+  - Dab throughput is one ~150k-dab batch.
+  - Autosave goes through the app's debounced path. Saving on hide, with its thumbnail, is reported separately.
+- **Stroke recorder** (`src/engine/input/recording.ts`):
+  - It records strokes as the engine accepts them: after palm rejection and gestures, in document px, with pressure, tilt, timing relative to the stroke start, and the full tool settings.
+  - Values are stored at full precision, since even 0.01 px of rounding would change antialiased edges.
+  - `engine.replay()` feeds the samples back through the same pipeline. It runs either instantly (regression) or at the recorded pace, with samples arriving between frames like real pointer events (benchmarks).
+  - With `?debug` it's available in Actions → Diagnostics and in the lab.
+- **Visual regression** (`e2e/replay.spec.ts`):
+  - It covers 10 synthetic scenes (every brush feature, both erasers, StreamLine, a cancelled stroke, all 9 blend modes) plus every recording in `e2e/recordings/`.
+  - Each is compared with a reference PNG in `e2e/snapshots/`, with a tolerance of about 1/255 on at most 4 pixels.
+  - pixelmatch is Playwright's built-in comparator, so there is no extra dependency.
+- **Real input in CI** (`e2e/input.spec.ts`): pen events with `force` and `tiltX/Y`, and touch events, are sent through CDP. This automates the pressure, tilt, palm, pen-first, pinch-cancel and recording-fidelity items of the checklist above.
+- **Bundle budget:** `./scripts/dnpm run size` fails above 250 KB of gzipped startup JS. It is currently about 120 KB; the lab and the PSD code load on demand.
+- **CI numbers** (SwiftShader, 1024 × 768 quick run): frame CPU p95 0.3 ms, commit 0.5 ms, ~100k dabs/s, undo 5 ms, autosave 80 ms, PNG 31 ms, PSD 124 ms, 0 leaked objects.
+  - At full §7.1 settings, the same software GPU stays within every budget except frame pacing (interval p95 33 ms with the 400 px brush). That is expected without a GPU.
+  - A first run also showed that flushing straight after a stroke blocks on that stroke's GPU readback. This is fine on hide, and the debounced save never does it.
+- **Not done:** the real-device runs, input-to-photon camera measurements and Photoshop/Krita blend comparisons. These need the hardware, and QA.md has the procedure and a results table. Spector.js and eruda weren't added: the HUD, the lab report and `?log` cover the same ground.
+
 ---
 
 ## 8. Phase-by-phase build roadmap

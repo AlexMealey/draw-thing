@@ -1,3 +1,5 @@
+import { trackGlObjects } from './tracking';
+
 const ATTRIBUTES: WebGLContextAttributes & { desynchronized?: boolean } = {
   alpha: false,
   antialias: false,
@@ -14,6 +16,7 @@ const ATTRIBUTES: WebGLContextAttributes & { desynchronized?: boolean } = {
 export function createGL(canvas: HTMLCanvasElement): WebGL2RenderingContext {
   const gl = canvas.getContext('webgl2', ATTRIBUTES);
   if (!gl) throw new Error('WebGL2 is not available');
+  trackGlObjects(gl);
   return gl;
 }
 

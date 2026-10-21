@@ -231,6 +231,7 @@ export function EditorScreen({
               project={project}
               engine={engine}
               flush={flush}
+              debug={debug}
               onNotice={onNotice}
               onClose={close}
               onInstall={

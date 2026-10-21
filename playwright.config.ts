@@ -8,6 +8,8 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.GITHUB_ACTIONS ? 'github' : 'list',
+  // Always rendered in the same container, so one reference image per test is enough.
+  snapshotPathTemplate: '{testDir}/snapshots/{testFileName}/{arg}{ext}',
   use: {
     baseURL: `http://localhost:${PORT}`,
     trace: 'on-first-retry',

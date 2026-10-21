@@ -3,7 +3,7 @@
 A pen-first drawing PWA for iPad + Apple Pencil and Windows tablets + Surface/MPP pens.
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the architecture and phased plan.
 
-**Status:** Phase 7. In so far:
+**Status:** Phase 8. In so far:
 
 - the WebGL2 engine, pen input and gestures
 - the brush engine (Ink, Pencil, Airbrush, Marker, Chalk, plus an eraser)
@@ -20,8 +20,15 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the architecture and phased plan.
   - "Open with DrawThing" for `.drawthing`, PSD and image files on Windows
   - a title-bar-less desktop window
   - recovery from a GPU reset without losing the artwork or its undo history
+- performance and QA tooling:
+  - a benchmark lab (`?lab`)
+  - a stroke recorder
+  - stroke-replay visual regression and real pen/touch input tests in CI
+  - a bundle-size budget
+  - the device checklist in [docs/QA.md](docs/QA.md)
 
-Device testing and performance work come next (Phase 8).
+Running that checklist on real iPads and Surfaces is next. Optional cloud sync (Phase 9) follows if
+it's wanted.
 
 ## Requirements
 
@@ -50,13 +57,15 @@ Run npm inside the dev image with `./scripts/dnpm`:
 ./scripts/dnpm run check
 ```
 
-| Command                        | What it does                                                                       |
-| ------------------------------ | ---------------------------------------------------------------------------------- |
-| `docker compose up dev`        | Vite dev server on http://localhost:5173 (no service worker in dev)                |
-| `./scripts/dnpm run check`     | Typecheck, lint, format check and unit tests                                       |
-| `./scripts/dnpm run build`     | Production build into `dist/`                                                      |
-| `./scripts/dnpm install <pkg>` | Add a dependency (updates `package.json` and the lockfile)                         |
-| `./scripts/e2e`                | Playwright end-to-end tests (PWA, undo/redo, saving, export and import, GPU reset) |
+| Command                                   | What it does                                                                       |
+| ----------------------------------------- | ---------------------------------------------------------------------------------- |
+| `docker compose up dev`                   | Vite dev server on http://localhost:5173 (no service worker in dev)                |
+| `./scripts/dnpm run check`                | Typecheck, lint, format check and unit tests                                       |
+| `./scripts/dnpm run build`                | Production build into `dist/`                                                      |
+| `./scripts/dnpm install <pkg>`            | Add a dependency (updates `package.json` and the lockfile)                         |
+| `./scripts/e2e`                           | Playwright end-to-end tests (PWA, undo/redo, saving, export and import, GPU reset) |
+| `./scripts/e2e replay --update-snapshots` | Refresh the visual regression reference images after an intended change            |
+| `./scripts/dnpm run size`                 | Build, then check the startup JavaScript against its 250 KB gzipped budget         |
 
 When `package.json` changes under you (e.g. after a `git pull`), refresh the dependency volume:
 
@@ -171,6 +180,10 @@ Add query flags once. They're remembered per device, so the installed app keeps 
   (`docker compose logs -f dev`). The deployed Caddy image has no log endpoint, so the client
   switches itself off there.
 - `?debug=0` / `?log=0` turns them off.
+- `?lab` opens the benchmark lab on a scratch canvas. It never touches your artwork.
+  - It holds the §7.1 benchmarks, a 30-minute soak test, and stroke recording and replay.
+  - With `?debug`, the recorder is also in Actions → Diagnostics.
+  - See [docs/QA.md](docs/QA.md).
 
 ## Layout
 
@@ -181,11 +194,12 @@ src/
   engine/     WebGL2 engine: input, gestures, view transform, brush, layers, history, rendering
   persistence/  IndexedDB projects and tiles, the autosaver, the saved document format
   files/      export and import: PNG/JPEG, PSD (ag-psd, in a worker), .drawthing (zip), delivery
-  debug/      flags, HUD, remote logging client
+  debug/      flags, HUD, remote logging client, stroke recorder controls
+  lab/        benchmark lab (?lab): benchmarks, soak, synthetic strokes, regression scenes
   platform/   OS / install-mode detection, service worker updates, install prompt, file launches
   styles/     global CSS: design tokens + browser-gesture suppression
-tools/        Vite plugins (remote-log endpoint)
-e2e/          Playwright PWA tests
+tools/        Vite plugins (remote-log endpoint), bundle-size check
+e2e/          Playwright tests; snapshots/ holds reference images, recordings/ real pen sessions
 deploy/       Caddyfile and env presets (local / LAN / cloud)
 scripts/      dnpm (npm in Docker), e2e
 Dockerfile, compose.yaml

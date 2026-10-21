@@ -1,5 +1,6 @@
 import { compressTile } from '../engine/history/compress';
 import type { TileData } from '../engine/history/History';
+import { perf } from '../engine/perf';
 import { encodeImage } from '../files/image';
 import { documentStore } from '../state/documentStore';
 import { toSaved } from './document';
@@ -100,6 +101,7 @@ export class Autosaver {
 
   private save(final: boolean): Promise<void> {
     if (this.closed) return this.chain;
+    const start = performance.now();
     // Everything that touches the engine happens now, synchronously; the rest is async.
     // Taking the changes first also lands a stroke whose pen just lifted: its commit is what
     // marks the document changed, so checking `dirty` before it would skip that stroke.
@@ -124,6 +126,7 @@ export class Autosaver {
     const removedLayers = [...this.stored].filter((id) => !ids.has(id));
     this.stored = ids;
     this.full = false;
+    perf.saveSync.push(performance.now() - start);
 
     this.chain = this.chain.then(async () => {
       try {
@@ -142,6 +145,7 @@ export class Autosaver {
           name: this.opts.name,
           replaceTiles: full,
         });
+        perf.saveTotal.push(performance.now() - start);
         if (!this.savedOnce) {
           this.savedOnce = true;
           await setLastOpen(this.projectId);

@@ -15,6 +15,12 @@ import { type Pt, StrokePath } from './brush/StrokePath';
 import type { ToolSettings } from './brush/tool';
 import { createGL, isDesynchronized } from './gl/context';
 import { createTarget, deleteTarget, type Rect, strokeFormat, type Target } from './gl/target';
+import {
+  forgetGlObjects,
+  type GlObjectCounts,
+  glObjectCounts,
+  totalGlObjects,
+} from './gl/tracking';
 import type { SavedDocument } from '../persistence/document';
 import { compressTile, inflateTile } from './history/compress';
 import {
@@ -28,6 +34,7 @@ import { type Capture, TileIO } from './history/TileIO';
 import { alignToTiles, tileGrid, tileRect } from './history/tiles';
 import { GestureRecognizer } from './input/GestureRecognizer';
 import { type InputSample, PointerInput, type StrokeSink } from './input/PointerInput';
+import { type StrokeRecording, StrokeRecorder, strokeSamples } from './input/recording';
 import { gpuBudgetBytes, historyBudgetBytes, maxLayersFor } from './layers/budget';
 import { MAX_DOC_SIZE, screenDocSize } from './limits';
 import {
@@ -52,6 +59,7 @@ import {
   unpremultiply,
 } from './render/readback';
 import { Thumbnailer } from './render/Thumbnailer';
+import { perf } from './perf';
 import { ema, engineStats } from './stats';
 import { type Insets, NO_INSETS, ViewTransform } from './view/ViewTransform';
 
@@ -200,6 +208,8 @@ export class Engine implements StrokeSink {
   private galleryThumbnailer: Thumbnailer | null = null;
   private thumbsDirty = new Set<string>();
   private thumbTimer: ReturnType<typeof setTimeout> | undefined;
+
+  private recorder: StrokeRecorder | null = null;
 
   private eyedropperArmed = false;
   private picking: { color: string | null } | null = null;
@@ -609,6 +619,82 @@ export class Engine implements StrokeSink {
     return (h >>> 0).toString(16).padStart(8, '0');
   }
 
+  /** Records the strokes from now on (diagnostics), until stopRecording(). */
+  startRecording(note = '') {
+    this.recorder = new StrokeRecorder({ w: this.docW, h: this.docH }, note);
+  }
+
+  stopRecording(): StrokeRecording | null {
+    const rec = this.recorder?.finish() ?? null;
+    this.recorder = null;
+    return rec;
+  }
+
+  /** Strokes recorded so far, or null when not recording. */
+  get recordedStrokes(): number | null {
+    return this.recorder?.strokeCount ?? null;
+  }
+
+  /**
+   * Plays recorded strokes back through the stroke pipeline, as if drawn on this canvas.
+   * 'instant' draws each stroke in a single frame (visual regression); 'recorded' feeds the
+   * samples at their original pace, the way a digitizer would (benchmarks).
+   */
+  async replay(rec: StrokeRecording, pace: 'instant' | 'recorded' = 'instant'): Promise<void> {
+    const saved = this.tool;
+    try {
+      for (const stroke of rec.strokes) {
+        await this.whenIdle();
+        if (this.disposed || this.lost) return;
+        this.tool = stroke.tool;
+        const [first, ...rest] = strokeSamples(stroke, performance.now());
+        if (!first) continue;
+        this.begin(first, {
+          pointerType: stroke.pointerType,
+          eraser: stroke.eraser,
+          barrel: false,
+        });
+        if (!this.stroke) continue; // refused: locked or hidden layer
+        if (pace === 'instant') {
+          this.extend(rest);
+        } else {
+          // Like pointer events: samples arrive between frames, and each frame draws what's due.
+          for (let i = 0; i < rest.length && this.stroke;) {
+            await new Promise((resolve) => setTimeout(resolve, 4));
+            const now = performance.now();
+            const due: InputSample[] = [];
+            for (let s = rest[i]; s && s.t <= now; s = rest[++i]) due.push(s);
+            if (due.length > 0) this.extend(due);
+          }
+        }
+        if (stroke.end === 'commit') this.end();
+        else this.cancel();
+        if (!this.disposed && !this.lost) this.renderNow();
+      }
+    } finally {
+      this.tool = saved;
+    }
+  }
+
+  /** Blocks until the GPU has finished all submitted work (benchmarks): a 1-pixel readback. */
+  gpuSync() {
+    if (this.disposed || this.lost) return;
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.compositor.output.fbo);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+  }
+
+  /** A document point in view CSS px (tests that drive real pointer input). */
+  viewPoint(x: number, y: number): [number, number] {
+    return apply(this.view.docToView, x, y);
+  }
+
+  /** Live GL objects of this context, by kind. */
+  glObjects(): GlObjectCounts {
+    return glObjectCounts(this.gl);
+  }
+
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
@@ -682,6 +768,7 @@ export class Engine implements StrokeSink {
       predict: smoothing === 0,
       bounds: null,
     };
+    this.recorder?.begin(s, this.tool, opts);
     this.hoverSample = null;
     this.queue.push(s);
     this.requestFrame();
@@ -694,6 +781,7 @@ export class Engine implements StrokeSink {
       return;
     }
     if (!this.stroke || this.pending) return;
+    this.recorder?.extend(samples);
     for (const s of samples) this.queue.push(s);
     this.requestFrame();
   }
@@ -710,14 +798,16 @@ export class Engine implements StrokeSink {
 
   end() {
     if (this.picking) return this.finishPick(true);
-    if (!this.stroke) return;
+    if (!this.stroke || this.pending) return;
+    this.recorder?.end('commit');
     this.pending = 'commit';
     this.requestFrame();
   }
 
   cancel() {
     if (this.picking) return this.finishPick(false);
-    if (!this.stroke) return;
+    if (!this.stroke || this.pending === 'cancel') return;
+    if (!this.pending) this.recorder?.end('cancel');
     this.pending = 'cancel';
     this.queue.length = 0;
     this.requestFrame();
@@ -786,6 +876,7 @@ export class Engine implements StrokeSink {
 
     // 2. Pen-up merges the stroke into its layer; a cancelled stroke just goes away.
     if (stroke && this.pending) {
+      const commitStart = performance.now();
       const r = stroke.bounds && clampRect(stroke.bounds, this.docW, this.docH);
       const target = this.layers.get(stroke.layerId);
       if (r) {
@@ -808,6 +899,7 @@ export class Engine implements StrokeSink {
         this.compositor.clearTarget(this.strokeBuf, r);
         this.markDirty(stroke.layerId === doc.activeLayerId ? r : 'all');
       }
+      if (this.pending === 'commit') perf.commit.push(performance.now() - commitStart);
       this.stroke = null;
       this.pending = null;
       this.predicted = [];
@@ -878,7 +970,11 @@ export class Engine implements StrokeSink {
     const end = performance.now();
     if (newestInput >= 0) engineStats.latencyMs = ema(engineStats.latencyMs, end - newestInput);
     engineStats.dabsPerFrame = batch.count;
+    engineStats.dabsTotal += batch.count;
     engineStats.frameCpuMs = ema(engineStats.frameCpuMs, end - start);
+    engineStats.glObjects = totalGlObjects(gl);
+    if (stroke) perf.frame.push(end - start);
+    perf.firstFrameMs ??= end;
     engineStats.zoomPercent = this.view.scale * dpr * 100;
     engineStats.rotationDeg = (this.view.rotation * 180) / Math.PI;
     if (this.captures.size > 0) this.requestFrame(); // keep polling the GPU readbacks
@@ -1027,6 +1123,7 @@ export class Engine implements StrokeSink {
   }
 
   private async applyHistory(direction: 'undo' | 'redo') {
+    const start = performance.now();
     this.history.flushPending();
     const peek = () => (direction === 'undo' ? this.history.peekUndo() : this.history.peekRedo());
     const entry = peek();
@@ -1057,6 +1154,7 @@ export class Engine implements StrokeSink {
     this.markThumbs([...writes.keys()]);
     this.notice(`${direction === 'undo' ? 'Undo' : 'Redo'}: ${entry.label}`);
     this.opts.onChange?.();
+    perf.history.push(performance.now() - start);
   }
 
   /** A recorded change's result is the tiles' new content. */
@@ -1305,6 +1403,8 @@ export class Engine implements StrokeSink {
     this.raf = 0;
     clearTimeout(this.thumbTimer);
     if (this.picking) this.finishPick(false);
+    if (this.stroke && !this.pending) this.recorder?.end('cancel');
+    forgetGlObjects(this.gl);
     this.stroke = null;
     this.pending = null;
     this.queue.length = 0;

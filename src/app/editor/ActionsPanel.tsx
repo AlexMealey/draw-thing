@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { RecorderControls } from '../../debug/RecorderControls';
 import type { Engine } from '../../engine/Engine';
 import { tileGrid } from '../../engine/history/tiles';
 import { chooseFile, deliver } from '../../files/deliver';
@@ -17,6 +18,8 @@ interface Props {
   project: OpenProject;
   engine: () => Engine | null;
   flush: () => Promise<void>;
+  /** Shows the diagnostics section (?debug). */
+  debug?: boolean;
   onNotice: (message: string) => void;
   onClose: () => void;
   onNewCanvas: () => void;
@@ -50,6 +53,7 @@ export function ActionsPanel({
   project,
   engine,
   flush,
+  debug,
   onNotice,
   onClose,
   onNewCanvas,
@@ -202,6 +206,25 @@ export function ActionsPanel({
           onChange={(e) => setPrefs({ fingerDrawing: e.target.checked })}
         />
       </label>
+
+      {debug && (
+        <>
+          <h3 className={ui.section}>Diagnostics</h3>
+          <RecorderControls engine={engine} onNotice={onNotice} />
+          <p style={{ margin: '4px 0' }}>
+            <button
+              className={ui.textButton}
+              onClick={() =>
+                void flush().then(() => {
+                  location.href = './?lab';
+                })
+              }
+            >
+              Open the lab (benchmarks)
+            </button>
+          </p>
+        </>
+      )}
 
       <h3 className={ui.section}>Gestures & shortcuts</h3>
       <dl

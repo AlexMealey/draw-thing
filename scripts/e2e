@@ -4,5 +4,5 @@
 set -e
 cd "$(dirname "$0")/.."
 # Pre-create the bind-mounted output folders so Docker doesn't create them as root.
-mkdir -p playwright-report test-results
+mkdir -p playwright-report test-results e2e/snapshots
 exec docker compose run --rm --build e2e npx playwright test "$@"
