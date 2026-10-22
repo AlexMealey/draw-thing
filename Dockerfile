@@ -12,7 +12,9 @@ ARG NODE_VERSION=22
 ARG PLAYWRIGHT_VERSION=1.64.1
 ARG CADDY_VERSION=2.11
 
-FROM node:${NODE_VERSION}-bookworm-slim AS deps
+# Node stages run on the build machine's own platform: the built app is the same static files for
+# every target, so a multi-platform build only varies the Caddy runtime and never emulates npm.
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS deps
 WORKDIR /app
 # Run as the image's "node" user (uid 1000) so files written into the bind-mounted
 # source tree (package-lock.json, dist/) belong to a normal host user, not root.

@@ -154,6 +154,20 @@ docker build --target runtime -t registry.example.com/drawthing .
 docker push registry.example.com/drawthing
 ```
 
+### Published image
+
+Every push to `main` publishes the `runtime` image to GitHub Packages as
+`ghcr.io/alexmealey/draw-thing`, for Intel/AMD and ARM (`.github/workflows/publish.yml`). A
+`v1.2.0` tag also publishes `:1.2.0` and `:1.2`. To run it without the source, on the same
+system:
+
+```bash
+docker run -d --name drawthing -p 127.0.0.1:8080:80 ghcr.io/alexmealey/draw-thing
+```
+
+For LAN or cloud mode, set `APP_IMAGE=ghcr.io/alexmealey/draw-thing` in the env file, then
+`docker compose --env-file <file> pull app` and `up -d app`, without `--build`.
+
 ## Testing on tablets during development
 
 - **Pen input over the LAN, with hot reload:** start the dev server with
@@ -203,5 +217,6 @@ e2e/          Playwright tests; snapshots/ holds reference images, recordings/ r
 deploy/       Caddyfile and env presets (local / LAN / cloud)
 scripts/      dnpm (npm in Docker), e2e
 Dockerfile, compose.yaml
+.github/workflows/publish.yml   publishes the runtime image to ghcr.io
 public/logo.svg   source for all generated icons and iPad splash screens (pwa-assets.config.ts)
 ```
