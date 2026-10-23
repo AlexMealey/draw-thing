@@ -7,6 +7,17 @@ const names = () => store().layers.map((l) => l.name);
 describe('documentStore', () => {
   beforeEach(() => store().reset({ width: 100, height: 100, maxLayers: 3 }));
 
+  it('starts on the background it is given, white by default', () => {
+    expect(store().background).toEqual({ color: '#ffffff', visible: true });
+    store().reset({
+      width: 10,
+      height: 10,
+      maxLayers: 1,
+      background: { color: '#f4efe4', visible: false },
+    });
+    expect(store().background).toEqual({ color: '#f4efe4', visible: false });
+  });
+
   it('starts with one selected layer', () => {
     expect(names()).toEqual(['Layer 1']);
     expect(activeIndex(store())).toBe(0);

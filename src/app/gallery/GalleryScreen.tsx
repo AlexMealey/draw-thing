@@ -11,6 +11,9 @@ import {
   type ProjectSummary,
   renameProject,
 } from '../../persistence/projects';
+import type { Background } from '../../state/documentStore';
+import { toolStore } from '../../state/toolStore';
+import { BackgroundPicker } from '../ui/BackgroundPicker';
 import { PlusIcon } from '../ui/icons';
 import ui from '../ui/ui.module.css';
 import styles from './GalleryScreen.module.css';
@@ -29,7 +32,7 @@ interface Props {
   startNew?: boolean;
   onOpenCurrent: () => void;
   onOpen: (id: string) => void;
-  onCreate: (size: Size) => void;
+  onCreate: (size: Size, background: Background) => void;
   /** Called before a project is deleted (the editor stops saving it if it's open). */
   onDelete: (id: string) => Promise<void>;
   onRenamed: (id: string, name: string) => void;
@@ -321,9 +324,10 @@ function NewCanvas({
   onCreate,
 }: {
   onCancel: () => void;
-  onCreate: (size: Size) => void;
+  onCreate: (size: Size, background: Background) => void;
 }) {
   const [list] = useState(presets);
+  const [background, setBackground] = useState(() => toolStore.getState().newCanvasBackground);
   const [choice, setChoice] = useState<number | 'custom'>(0);
   const [custom, setCustom] = useState<Size>({ w: 2000, h: 1500 });
   const budget = gpuBudgetBytes();
@@ -388,11 +392,16 @@ function NewCanvas({
             px
           </div>
         )}
+        <h3 className={ui.section}>Background</h3>
+        <BackgroundPicker value={background} onChange={setBackground} />
         <div className={styles.buttons}>
           <button className={ui.textButton} onClick={onCancel}>
             Cancel
           </button>
-          <button className={`${ui.textButton} ${ui.primary}`} onClick={() => onCreate(size)}>
+          <button
+            className={`${ui.textButton} ${ui.primary}`}
+            onClick={() => onCreate(size, background)}
+          >
             Create
           </button>
         </div>

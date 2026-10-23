@@ -1,7 +1,13 @@
+import { useState } from 'react';
 import { resolvePreset } from '../../engine/brush/overrides';
-import { presetById } from '../../engine/brush/presets';
 import type { Engine } from '../../engine/Engine';
-import { currentAdjustments, toolStore, useTools } from '../../state/toolStore';
+import {
+  brushById,
+  currentAdjustments,
+  isBuiltIn,
+  toolStore,
+  useTools,
+} from '../../state/toolStore';
 import { BackIcon } from '../ui/icons';
 import { Panel } from '../ui/Panel';
 import { percent } from '../ui/format';
@@ -16,17 +22,33 @@ interface Props {
   engine: () => Engine | null;
   onBack: () => void;
   onClose: () => void;
+  /** Shows another brush's settings (after Save as new brush). */
+  onOpen: (presetId: string) => void;
 }
 
-/** Edits a brush preset (saved per device as an override; Reset restores the original). */
-export function BrushSettings({ presetId, engine, onBack, onClose }: Props) {
-  const base = presetById(presetId);
+/**
+ * Edits a brush. A built-in brush's edits are saved per device as an override (Reset restores
+ * the original); a custom brush is edited in place.
+ */
+export function BrushSettings({ presetId, engine, onBack, onClose, onOpen }: Props) {
+  const builtIn = isBuiltIn(presetId);
+  const base = useTools((s) => brushById(s, presetId));
   const override = useTools((s) => s.overrides[presetId]);
   const smoothing = useTools((s) => currentAdjustments(s).smoothing);
-  const p = resolvePreset(base, override);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const p = builtIn ? resolvePreset(base, override) : base;
   const preview = usePreview(engine);
-  const { setOverride, resetOverride, adjust } = toolStore.getState();
-  const set = (patch: Parameters<typeof setOverride>[1]) => setOverride(presetId, patch);
+  const {
+    setOverride,
+    resetOverride,
+    updateCustomBrush,
+    renameCustomBrush,
+    saveAsNewBrush,
+    deleteCustomBrush,
+    adjust,
+  } = toolStore.getState();
+  const set = (patch: Parameters<typeof setOverride>[1]) =>
+    builtIn ? setOverride(presetId, patch) : updateCustomBrush(presetId, patch);
   const x = (v: number) => `${v.toFixed(1)}×`;
 
   return (
@@ -39,6 +61,16 @@ export function BrushSettings({ presetId, engine, onBack, onClose }: Props) {
         </button>
       }
     >
+      {!builtIn && (
+        <input
+          className={styles.nameInput}
+          aria-label="Brush name"
+          value={p.name}
+          maxLength={40}
+          onChange={(e) => renameCustomBrush(presetId, e.target.value)}
+          onBlur={(e) => !e.target.value.trim() && renameCustomBrush(presetId, 'Brush')}
+        />
+      )}
       <img className={styles.preview} src={preview(p)} alt={`${p.name} preview`} />
 
       <h3 className={ui.section}>Stroke</h3>
@@ -155,16 +187,48 @@ export function BrushSettings({ presetId, engine, onBack, onClose }: Props) {
       />
 
       <div className={styles.footer}>
-        <button
-          className={ui.textButton}
-          disabled={!override}
-          onClick={() => {
-            resetOverride(presetId);
-            adjust({ smoothing: base.stabilization });
-          }}
-        >
-          Reset brush
-        </button>
+        {builtIn ? (
+          <button
+            className={ui.textButton}
+            disabled={!override}
+            onClick={() => {
+              resetOverride(presetId);
+              adjust({ smoothing: base.stabilization });
+            }}
+          >
+            Reset brush
+          </button>
+        ) : confirmDelete ? (
+          <>
+            <button className={ui.textButton} onClick={() => setConfirmDelete(false)}>
+              Keep
+            </button>
+            <button
+              className={`${ui.textButton} ${ui.danger}`}
+              onClick={() => {
+                deleteCustomBrush(presetId);
+                onBack();
+              }}
+            >
+              Delete {p.name}
+            </button>
+          </>
+        ) : (
+          <button
+            className={`${ui.textButton} ${ui.danger}`}
+            onClick={() => setConfirmDelete(true)}
+          >
+            Delete brush
+          </button>
+        )}
+        {!confirmDelete && (
+          <button
+            className={`${ui.textButton} ${ui.primary}`}
+            onClick={() => onOpen(saveAsNewBrush(presetId))}
+          >
+            Save as new brush
+          </button>
+        )}
       </div>
     </Panel>
   );

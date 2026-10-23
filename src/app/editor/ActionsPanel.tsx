@@ -2,13 +2,13 @@ import { useEffect, useState } from 'react';
 import { RecorderControls } from '../../debug/RecorderControls';
 import type { Engine } from '../../engine/Engine';
 import { tileGrid } from '../../engine/history/tiles';
-import { chooseFile, deliver } from '../../files/deliver';
-import { exportArtwork, type ExportedFile, type ExportFormat } from '../../files/exportArtwork';
+import { chooseFile } from '../../files/deliver';
 import { decodeImage, fitImage, pixelsToTiles } from '../../files/image';
 import { IMAGE_ACCEPT } from '../../files/importFile';
 import { documentStore, useDocument } from '../../state/documentStore';
 import { toolStore, useTools } from '../../state/toolStore';
 import type { OpenProject } from '../project';
+import { BackgroundPicker } from '../ui/BackgroundPicker';
 import { fileSize, percent } from '../ui/format';
 import { Panel } from '../ui/Panel';
 import { SliderRow } from '../ui/SliderRow';
@@ -40,13 +40,8 @@ const GESTURES: [string, string][] = [
   ['Space + drag', 'Move the canvas (keyboard)'],
   ['B / E / L / C', 'Brush, eraser, layers, color'],
   ['[ and ]', 'Smaller / bigger brush'],
-];
-
-const FORMATS: { id: ExportFormat; label: string; hint: string }[] = [
-  { id: 'png', label: 'PNG', hint: 'Flattened, keeps transparency' },
-  { id: 'jpeg', label: 'JPEG', hint: 'Flattened, smallest' },
-  { id: 'psd', label: 'PSD', hint: 'Layers, for Photoshop and others' },
-  { id: 'drawthing', label: 'DrawThing', hint: 'Everything, to back up or move' },
+  ['Ctrl/⌘ + and −', 'Zoom in / out'],
+  ['← and →', 'Rotate the canvas (turn on under Canvas view)'],
 ];
 
 export function ActionsPanel({
@@ -66,21 +61,17 @@ export function ActionsPanel({
   const maxLayers = useDocument((s) => s.maxLayers);
   const sidebarRight = useTools((s) => s.sidebarRight);
   const fingerDrawing = useTools((s) => s.fingerDrawing);
+  const arrowRotate = useTools((s) => s.arrowRotate);
+  const arrowRotateStep = useTools((s) => s.arrowRotateStep);
+  const snapRotation = useTools((s) => s.snapRotation);
+  const sizeStep = useTools((s) => s.sizeStep);
+  const keyZoomStep = useTools((s) => s.keyZoomStep);
+  const newCanvasBackground = useTools((s) => s.newCanvasBackground);
   const { setPrefs } = toolStore.getState();
-  const [quality, setQuality] = useState(0.92);
   const [busy, setBusy] = useState<string | null>(null);
-  /** An export whose save dialog needs a fresh tap (the first one expired while encoding). */
-  const [ready, setReady] = useState<ExportedFile | null>(null);
-
-  const save = async (file: ExportedFile) => {
-    const result = await deliver(file.blob, file.filename);
-    setReady(result === 'needs-tap' ? file : null);
-    if (result === 'saved') onNotice(`Exported ${file.filename}`);
-  };
 
   const run = async (label: string, job: () => Promise<void>) => {
     setBusy(label);
-    setReady(null);
     try {
       await job();
     } catch (err) {
@@ -90,13 +81,6 @@ export function ActionsPanel({
       setBusy(null);
     }
   };
-
-  const exportAs = (format: ExportFormat, label: string) =>
-    run(`Exporting ${label}…`, async () => {
-      const e = engine();
-      if (!e) return;
-      await save(await exportArtwork(e, project, format, { jpegQuality: quality, flush }));
-    });
 
   const insertImage = async () => {
     const file = await chooseFile(IMAGE_ACCEPT);
@@ -130,44 +114,9 @@ export function ActionsPanel({
         </button>
       </p>
 
-      <h3 className={ui.section}>Share</h3>
-      <div style={{ display: 'grid', gap: 6 }}>
-        {FORMATS.map((f) => (
-          <button
-            key={f.id}
-            className={ui.textButton}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 12,
-            }}
-            disabled={!!busy}
-            onClick={() => void exportAs(f.id, f.label)}
-          >
-            <span>{f.label}</span>
-            <small style={{ color: 'var(--color-text-muted)' }}>{f.hint}</small>
-          </button>
-        ))}
-      </div>
-      <SliderRow
-        label="JPEG quality"
-        value={quality}
-        min={0.5}
-        max={1}
-        format={percent}
-        onChange={setQuality}
-      />
       {busy && (
         <p role="status" style={{ margin: 0, fontSize: 14, color: 'var(--color-text-muted)' }}>
           {busy}
-        </p>
-      )}
-      {ready && (
-        <p>
-          <button className={`${ui.textButton} ${ui.primary}`} onClick={() => void save(ready)}>
-            Save {ready.filename}
-          </button>
         </p>
       )}
 
@@ -206,6 +155,59 @@ export function ActionsPanel({
           onChange={(e) => setPrefs({ fingerDrawing: e.target.checked })}
         />
       </label>
+
+      <h3 className={ui.section}>Canvas view</h3>
+      <label className={ui.switch}>
+        Arrow keys rotate the canvas
+        <input
+          type="checkbox"
+          checked={arrowRotate}
+          onChange={(e) => setPrefs({ arrowRotate: e.target.checked })}
+        />
+      </label>
+      {arrowRotate && (
+        <SliderRow
+          label="Rotation step"
+          value={arrowRotateStep}
+          min={1}
+          max={90}
+          step={1}
+          format={(v) => `${v}°`}
+          onChange={(v) => setPrefs({ arrowRotateStep: v })}
+        />
+      )}
+      <label className={ui.switch}>
+        Snap rotation to quarter turns
+        <input
+          type="checkbox"
+          checked={snapRotation}
+          onChange={(e) => setPrefs({ snapRotation: e.target.checked })}
+        />
+      </label>
+      <SliderRow
+        label="Zoom step"
+        value={keyZoomStep}
+        min={1.1}
+        max={2}
+        step={0.05}
+        format={(v) => `${v.toFixed(2)}×`}
+        onChange={(v) => setPrefs({ keyZoomStep: v })}
+      />
+      <SliderRow
+        label="Size step"
+        value={sizeStep}
+        min={0.05}
+        max={0.5}
+        format={percent}
+        onChange={(v) => setPrefs({ sizeStep: v })}
+      />
+
+      <h3 className={ui.section}>New canvas background</h3>
+      <BackgroundPicker
+        label="New canvas background"
+        value={newCanvasBackground}
+        onChange={(background) => setPrefs({ newCanvasBackground: background })}
+      />
 
       {debug && (
         <>

@@ -1,0 +1,36 @@
+.picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-1) 0 var(--space-2);
+}
+
+.swatch {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 0.2);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.swatch[aria-checked='true'],
+.swatch[data-checked='true'] {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Any color: a color wheel until one is picked. */
+.custom {
+  background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red);
+}
+
+.custom input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}

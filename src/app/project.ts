@@ -2,6 +2,7 @@ import type { Engine } from '../engine/Engine';
 import type { Autosaver } from '../persistence/Autosaver';
 import { DEFAULT_NAME, newProjectId, type SavedDocument } from '../persistence/document';
 import { getLastOpen, getProject, loadTiles } from '../persistence/projects';
+import type { Background } from '../state/documentStore';
 
 /** The artwork open in the editor. */
 export interface OpenProject {
@@ -15,6 +16,8 @@ export interface OpenProject {
   tiles: Map<string, Map<number, Blob>> | null;
   /** Stored without a thumbnail (e.g. imported): make one once it's loaded. */
   needsThumbnail: boolean;
+  /** A new canvas's background (white when absent). */
+  background?: Background;
 }
 
 /** The live editor's engine and its autosaver. */
@@ -25,7 +28,7 @@ export interface Session {
 
 let mounts = 0;
 
-export function newProject(size: { w: number; h: number }): OpenProject {
+export function newProject(size: { w: number; h: number }, background?: Background): OpenProject {
   return {
     key: ++mounts,
     id: newProjectId(),
@@ -34,6 +37,7 @@ export function newProject(size: { w: number; h: number }): OpenProject {
     doc: null,
     tiles: null,
     needsThumbnail: false,
+    background,
   };
 }
 

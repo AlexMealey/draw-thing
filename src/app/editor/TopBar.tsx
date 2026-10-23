@@ -1,5 +1,12 @@
 import type { ToolMode } from '../../state/toolStore';
-import { ActionsIcon, BrushIcon, EraserIcon, GalleryIcon, LayersIcon } from '../ui/icons';
+import {
+  ActionsIcon,
+  BrushIcon,
+  EraserIcon,
+  GalleryIcon,
+  LayersIcon,
+  ShareIcon,
+} from '../ui/icons';
 import ui from '../ui/ui.module.css';
 import type { PanelId } from './EditorScreen';
 import styles from './TopBar.module.css';
@@ -29,6 +36,14 @@ export function TopBar({ open, mode, color, onGallery, onToggle, onTool }: Props
           onClick={() => onToggle('actions')}
         >
           <ActionsIcon />
+        </button>
+        <button
+          className={ui.iconButton}
+          aria-label="Share"
+          aria-expanded={open === 'share'}
+          onClick={() => onToggle('share')}
+        >
+          <ShareIcon />
         </button>
       </div>
       <div className={styles.group}>

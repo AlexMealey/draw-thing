@@ -10,6 +10,7 @@ import {
 import { CanvasViewport } from '../CanvasViewport';
 import type { OpenProject, Session } from '../project';
 import { ActionsPanel } from './ActionsPanel';
+import { SharePanel } from './SharePanel';
 import { BrushLibrary } from './BrushLibrary';
 import { BrushSettings } from './BrushSettings';
 import { ColorPanel } from './ColorPanel';
@@ -22,7 +23,7 @@ import { TopBar } from './TopBar';
 const TOPBAR = 60;
 const SIDEBAR = 64;
 
-export type PanelId = 'brushes' | 'brushSettings' | 'layers' | 'color' | 'actions';
+export type PanelId = 'brushes' | 'brushSettings' | 'layers' | 'color' | 'actions' | 'share';
 
 interface Props {
   project: OpenProject;
@@ -74,6 +75,8 @@ export function EditorScreen({
   const overrides = useTools((s) => s.overrides);
   const sidebarRight = useTools((s) => s.sidebarRight);
   const fingerDrawing = useTools((s) => s.fingerDrawing);
+  const snapRotation = useTools((s) => s.snapRotation);
+  const keyZoom = useTools((s) => s.keyZoomStep);
   const tool = useMemo(
     () => toolSettings({ ...toolStore.getState(), mode, color, presetIds, adjustments, overrides }),
     [mode, color, presetIds, adjustments, overrides],
@@ -108,6 +111,10 @@ export function EditorScreen({
   }, [engine, fingerDrawing]);
 
   useEffect(() => {
+    engine()?.setViewPrefs({ snapRotation, keyZoom });
+  }, [engine, snapRotation, keyZoom]);
+
+  useEffect(() => {
     engine()?.setEyedropper(eyedropper);
   }, [engine, eyedropper]);
 
@@ -118,6 +125,7 @@ export function EditorScreen({
       const tools = toolStore.getState();
       const size = currentAdjustments(tools).size;
       const max = currentPreset(tools).size.max;
+      const step = 1 + tools.sizeStep;
       switch (e.key) {
         case 'b':
           tools.setMode('paint');
@@ -135,10 +143,18 @@ export function EditorScreen({
           setEyedropper((on) => !on);
           break;
         case '[':
-          tools.adjust({ size: Math.max(1, Math.round(size / 1.15)) });
+          tools.adjust({ size: Math.max(1, Math.round(size / step)) });
           break;
         case ']':
-          tools.adjust({ size: Math.min(max, Math.max(size + 1, Math.round(size * 1.15))) });
+          tools.adjust({ size: Math.min(max, Math.max(size + 1, Math.round(size * step))) });
+          break;
+        case 'ArrowLeft':
+        case 'ArrowRight':
+          // Arrow keys also move sliders and radio buttons: leave them to focused controls.
+          if (!tools.arrowRotate || isControl(e.target)) return;
+          engine()?.rotateView(
+            e.key === 'ArrowLeft' ? -tools.arrowRotateStep : tools.arrowRotateStep,
+          );
           break;
         case 'Escape':
           setOpen(null);
@@ -151,7 +167,7 @@ export function EditorScreen({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggle]);
+  }, [toggle, engine]);
 
   const close = () => setOpen(null);
   const side = sidebarRight ? 'right' : 'left';
@@ -218,10 +234,12 @@ export function EditorScreen({
           )}
           {open === 'brushSettings' && settingsFor && (
             <BrushSettings
+              key={settingsFor}
               presetId={settingsFor}
               engine={engine}
               onBack={() => setOpen('brushes')}
               onClose={close}
+              onOpen={setSettingsFor}
             />
           )}
           {open === 'layers' && <LayersPanel engine={engine} onClose={close} onNotice={onNotice} />}
@@ -248,6 +266,15 @@ export function EditorScreen({
               }}
             />
           )}
+          {open === 'share' && (
+            <SharePanel
+              project={project}
+              engine={engine}
+              flush={flush}
+              onNotice={onNotice}
+              onClose={close}
+            />
+          )}
         </>
       )}
 
@@ -264,6 +291,15 @@ export function EditorScreen({
         />
       )}
     </div>
+  );
+}
+
+function isControl(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLSelectElement ||
+    target instanceof HTMLTextAreaElement ||
+    (target instanceof HTMLElement && (target.isContentEditable || target.role === 'radio'))
   );
 }
 

@@ -32,6 +32,8 @@ export interface Background {
   visible: boolean;
 }
 
+export const DEFAULT_BACKGROUND: Background = { color: '#ffffff', visible: true };
+
 export interface DocumentState {
   width: number;
   height: number;
@@ -44,7 +46,8 @@ export interface DocumentState {
   /** Numbering for new layer names. */
   layerCounter: number;
 
-  reset(opts: { width: number; height: number; maxLayers: number }): void;
+  /** A blank document; the background defaults to visible white. */
+  reset(opts: { width: number; height: number; maxLayers: number; background?: Background }): void;
   /** Replaces everything with a saved document. */
   load(doc: DocumentData): void;
   /** Adds an empty layer above the active one and selects it. Null at the layer limit. */
@@ -107,13 +110,13 @@ export const documentStore = createStore<DocumentState>()((set, get) => {
     maxLayers: 1,
     layerCounter: 1,
 
-    reset({ width, height, maxLayers }) {
+    reset({ width, height, maxLayers, background = DEFAULT_BACKGROUND }) {
       const layer = makeLayer('Layer 1');
       set({
         width,
         height,
         maxLayers,
-        background: { color: '#ffffff', visible: true },
+        background: { ...background },
         layers: [layer],
         activeLayerId: layer.id,
         layerCounter: 1,

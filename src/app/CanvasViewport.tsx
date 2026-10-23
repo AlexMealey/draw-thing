@@ -64,6 +64,7 @@ export function CanvasViewport(props: Props) {
     const engine = new Engine(canvas, {
       docSize: project.size,
       document: project.doc ?? undefined,
+      background: project.background,
       insets: p.insets,
       onChange: () => saver?.changed(),
       onTap: (fingers) => latest.current.onTap(fingers),

@@ -60,8 +60,8 @@ test('exports PNG, JPEG, PSD and .drawthing, and re-imports .drawthing exactly',
   const original = await hash(page);
 
   const exportAs = async (label: string) => {
-    if (!(await page.getByRole('dialog', { name: 'Actions' }).isVisible())) {
-      await page.getByRole('button', { name: 'Actions' }).click();
+    if (!(await page.getByRole('dialog', { name: 'Share' }).isVisible())) {
+      await page.getByRole('button', { name: 'Share', exact: true }).click();
     }
     const download = page.waitForEvent('download');
     await page.getByRole('button', { name: new RegExp(`^${label}`) }).click();

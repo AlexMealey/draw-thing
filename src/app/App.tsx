@@ -127,8 +127,8 @@ export function App({ debug }: { debug: boolean }) {
           startNew={gallery.startNew}
           onOpenCurrent={() => setGallery({ open: false })}
           onOpen={(id) => void open(id)}
-          onCreate={(size) => {
-            setProject(newProject(size));
+          onCreate={(size, background) => {
+            setProject(newProject(size, background));
             setGallery({ open: false });
           }}
           onDelete={async (id) => {

@@ -1,5 +1,6 @@
 import {
   activeIndex,
+  type Background,
   documentStore,
   type DocumentState,
   type LayerMeta,
@@ -81,6 +82,8 @@ export interface EngineOptions {
   docSize?: { w: number; h: number };
   /** Opens a saved document (its size wins over `docSize`); pixels follow via loadTiles(). */
   document?: SavedDocument;
+  /** A new document's background (ignored when opening a saved one). */
+  background?: Background;
   /** Fired after every change that's recorded in history, i.e. whenever there's unsaved work. */
   onChange?: () => void;
   /** View margins covered by UI chrome; "fit to screen" keeps the canvas clear of them. */
@@ -214,6 +217,8 @@ export class Engine implements StrokeSink {
   private eyedropperArmed = false;
   private picking: { color: string | null } | null = null;
   private spaceHeld = false;
+  private snapRotation = true;
+  private keyZoom = KEY_ZOOM;
   private panPointer: { id: number; x: number; y: number } | null = null;
 
   private batch = new DabBatch();
@@ -254,7 +259,12 @@ export class Engine implements StrokeSink {
       maxLayers = Math.max(maxLayers, saved.layers.length);
       documentStore.getState().load({ ...saved, width: this.docW, height: this.docH, maxLayers });
     } else {
-      documentStore.getState().reset({ width: this.docW, height: this.docH, maxLayers });
+      documentStore.getState().reset({
+        width: this.docW,
+        height: this.docH,
+        maxLayers,
+        background: opts.background,
+      });
     }
     this.syncLayers(documentStore.getState());
     this.unsubscribe = documentStore.subscribe(this.onDocumentChange);
@@ -272,7 +282,7 @@ export class Engine implements StrokeSink {
         this.requestFrame();
       },
       transformEnd: (pivot) => {
-        this.view.snapRotation(pivot.x, pivot.y);
+        if (this.snapRotation) this.view.snapRotation(pivot.x, pivot.y);
         this.requestFrame();
       },
       tap: (fingers) => this.opts.onTap?.(fingers),
@@ -334,6 +344,21 @@ export class Engine implements StrokeSink {
 
   fitToScreen() {
     this.view.fit(this.docW, this.docH, this.viewW, this.viewH, this.insets);
+    this.requestFrame();
+  }
+
+  /** `snapRotation`: twisting ends on a quarter turn when close to one. `keyZoom`: Ctrl/⌘ +/− step. */
+  setViewPrefs(prefs: { snapRotation: boolean; keyZoom: number }) {
+    this.snapRotation = prefs.snapRotation;
+    this.keyZoom = prefs.keyZoom;
+  }
+
+  /** Rotates the view about the middle of the area the UI leaves clear (positive = clockwise). */
+  rotateView(degrees: number) {
+    const { top, right, bottom, left } = this.insets;
+    const x = left + (this.viewW - left - right) / 2;
+    const y = top + (this.viewH - top - bottom) / 2;
+    this.view.rotateAt((degrees * Math.PI) / 180, x, y);
     this.requestFrame();
   }
 
@@ -1366,10 +1391,10 @@ export class Engine implements StrokeSink {
     switch (e.key) {
       case '=':
       case '+':
-        this.view.zoomAt(KEY_ZOOM, cx, cy);
+        this.view.zoomAt(this.keyZoom, cx, cy);
         break;
       case '-':
-        this.view.zoomAt(1 / KEY_ZOOM, cx, cy);
+        this.view.zoomAt(1 / this.keyZoom, cx, cy);
         break;
       case '0':
         this.view.fit(this.docW, this.docH, this.viewW, this.viewH, this.insets);
