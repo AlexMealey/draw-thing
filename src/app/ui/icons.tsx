@@ -97,6 +97,22 @@ export const BackIcon = () => (
   </Icon>
 );
 
+/** Points down when expanded; CSS rotates it for collapsed. */
+export const ChevronIcon = () => (
+  <Icon>
+    <path d="m6 9 6 6 6-6" />
+  </Icon>
+);
+
+/** Adjustments: a magic wand with sparkles. */
+export const AdjustIcon = () => (
+  <Icon>
+    <path d="m4 20 11-11" />
+    <path d="m13 7 2-2 4 4-2 2z" />
+    <path d="M7 4v3M5.5 5.5h3M19 14v3M17.5 15.5h3" />
+  </Icon>
+);
+
 export const HandleIcon = () => (
   <Icon>
     <path d="M5 9h14M5 15h14" />

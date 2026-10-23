@@ -4,7 +4,13 @@ import { gpuBudgetBytes, maxLayersFor } from '../engine/layers/budget';
 import { MAX_DOC_SIZE } from '../engine/limits';
 import { type SavedDocument } from '../persistence/document';
 import { createProject } from '../persistence/projects';
-import { type LayerMeta, makeLayer } from '../state/documentStore';
+import {
+  type LayerGroup,
+  type LayerMeta,
+  makeGroup,
+  makeLayer,
+  normalizeGroups,
+} from '../state/documentStore';
 import { decodeDrawthing } from './drawthing';
 import {
   decodeImage,
@@ -88,6 +94,12 @@ async function importPsd(file: File, name: string): Promise<Imported> {
     ? { color: bgColor, visible: first.visible }
     : { color: '#ffffff', visible: false }; // PSD layers bring their own background
   const metas: LayerMeta[] = [];
+  const groups: LayerGroup[] = (psd.groups ?? []).map((g) => ({
+    ...makeGroup(g.name),
+    visible: g.visible,
+    opacity: g.opacity,
+    alphaLocked: g.alphaLocked,
+  }));
   const pixels = new Map<string, { px: Pixels; left: number; top: number }>();
   for (const l of bgColor ? psd.layers.slice(1) : psd.layers) {
     const meta = {
@@ -96,13 +108,22 @@ async function importPsd(file: File, name: string): Promise<Imported> {
       opacity: l.opacity,
       blendMode: l.blendMode,
       alphaLocked: l.alphaLocked,
+      groupId: (l.group !== undefined && groups[l.group]?.id) || null,
     };
     metas.push(meta);
     if (l.pixels) pixels.set(meta.id, { px: l.pixels, left: l.left, top: l.top });
   }
   if (metas.length === 0) metas.push(makeLayer('Layer 1'));
   const thumb = psd.composite ? await makeThumbnail(psd.composite).catch(() => null) : null;
-  const id = await store(name, { w: psd.width, h: psd.height }, metas, pixels, background, thumb);
+  const id = await store(
+    name,
+    { w: psd.width, h: psd.height },
+    metas,
+    pixels,
+    background,
+    thumb,
+    groups,
+  );
   return {
     id,
     note:
@@ -119,6 +140,7 @@ async function store(
   pixels: Map<string, { px: Pixels; left: number; top: number }>,
   background: SavedDocument['background'],
   thumb: Blob | null,
+  groups: LayerGroup[] = [],
 ): Promise<string> {
   const grid = tileGrid(size.w, size.h);
   const tiles = new Map<string, Map<number, Blob>>();
@@ -135,9 +157,10 @@ async function store(
     height: size.h,
     tileSize: 256,
     background,
-    layers,
+    ...normalizeGroups(layers, groups),
     activeLayerId: layers[layers.length - 1]!.id,
     layerCounter: layers.length,
+    groupCounter: groups.length,
   };
   return createProject({ name, doc, tiles, thumb });
 }

@@ -7,6 +7,7 @@ import type { ToolSettings } from '../engine/brush/tool';
 import { type Background, DEFAULT_BACKGROUND } from './documentStore';
 
 export type ToolMode = 'paint' | 'erase';
+export type ColorPicker = 'square' | 'wheel';
 
 export interface BrushAdjustments {
   size: number;
@@ -50,6 +51,10 @@ export interface ToolState {
   keyZoomStep: number;
   /** Background picked first in the New canvas dialog. */
   newCanvasBackground: Background;
+  /** The color panel's picker: saturation/brightness square or a hue/saturation wheel. */
+  colorPicker: ColorPicker;
+  /** Hue, saturation, brightness and contrast sliders under the picker. */
+  colorSliders: boolean;
 
   setMode(mode: ToolMode): void;
   selectPreset(id: string): void;
@@ -80,7 +85,9 @@ type Pref =
   | 'snapRotation'
   | 'sizeStep'
   | 'keyZoomStep'
-  | 'newCanvasBackground';
+  | 'newCanvasBackground'
+  | 'colorPicker'
+  | 'colorSliders';
 
 const MAX_RECENT = 10;
 const MODES: readonly ToolMode[] = ['paint', 'erase'];
@@ -156,6 +163,8 @@ export const toolStore = createStore<ToolState>()(
       sizeStep: 0.15,
       keyZoomStep: 1.25,
       newCanvasBackground: DEFAULT_BACKGROUND,
+      colorPicker: 'square',
+      colorSliders: true,
 
       setMode: (mode) => set({ mode }),
       selectPreset: (id) => set({ presetIds: { ...get().presetIds, [get().mode]: id } }),
@@ -264,6 +273,8 @@ export const toolStore = createStore<ToolState>()(
         sizeStep: s.sizeStep,
         keyZoomStep: s.keyZoomStep,
         newCanvasBackground: s.newCanvasBackground,
+        colorPicker: s.colorPicker,
+        colorSliders: s.colorSliders,
       }),
     },
   ),

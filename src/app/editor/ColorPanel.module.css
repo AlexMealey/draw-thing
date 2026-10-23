@@ -9,6 +9,31 @@
     linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, transparent);
 }
 
+.wheel {
+  position: relative;
+  width: min(100%, 280px);
+  aspect-ratio: 1;
+  margin: 0 auto;
+  border-radius: 50%;
+  touch-action: none;
+  cursor: crosshair;
+  background:
+    radial-gradient(circle closest-side, #fff, rgb(255 255 255 / 0)),
+    conic-gradient(#f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+}
+
+.shade {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: #000;
+  pointer-events: none;
+}
+
+.sliders {
+  margin-bottom: var(--space-3);
+}
+
 .hue {
   position: relative;
   height: 28px;

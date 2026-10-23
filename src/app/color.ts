@@ -1,3 +1,5 @@
+import { contrastFactor } from '../engine/filters/Filters';
+
 /** Hue in degrees [0, 360), saturation and value in [0, 1]. */
 export interface Hsv {
   h: number;
@@ -55,4 +57,26 @@ export function hsvToHex({ h, s, v }: Hsv): string {
               ? [x, 0, c]
               : [c, 0, x];
   return rgbToHex((r + m) * 255, (g + m) * 255, (b + m) * 255);
+}
+
+/**
+ * A point on the color wheel → hue and saturation. `dx`, `dy` are from the center (y down) and
+ * `r` is the radius: red is at the top, hue runs clockwise, saturation grows outward.
+ */
+export function wheelToHs(dx: number, dy: number, r: number): { h: number; s: number } {
+  const h = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
+  return { h, s: r > 0 ? Math.min(1, Math.hypot(dx, dy) / r) : 0 };
+}
+
+/** Where a hue and saturation sit on the wheel, as fractions of the radius (y down). */
+export function hsToWheel(h: number, s: number): { x: number; y: number } {
+  const a = (h * Math.PI) / 180;
+  return { x: s * Math.sin(a), y: -s * Math.cos(a) };
+}
+
+/** Pushes a color away from (amount > 0) or toward (amount < 0) mid-gray, like layer contrast. */
+export function contrastColor(hex: string, amount: number): string {
+  const f = contrastFactor(amount);
+  const [r, g, b] = hexToRgb(hex).map((v) => (v - 127.5) * f + 127.5) as [number, number, number];
+  return rgbToHex(r, g, b);
 }

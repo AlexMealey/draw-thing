@@ -4,9 +4,10 @@ const MB = 1024 * 1024;
 
 /**
  * GPU overhead that doesn't depend on the layer count, in layer-sized units: the compositor's
- * below/above/out/preview/scratch targets plus a half-float stroke buffer (2×).
+ * below/above/out/preview/scratch targets, a half-float stroke buffer (2×) and the adjustment
+ * preview.
  */
-export const FIXED_LAYER_EQUIVALENTS = 7;
+export const FIXED_LAYER_EQUIVALENTS = 8;
 
 /**
  * Starting GPU memory budgets (ROADMAP §4.4), to be tuned on real devices. Exceeding what the OS

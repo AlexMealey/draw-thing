@@ -23,6 +23,7 @@ const layer = (id: string) => ({
   blendMode: 'normal' as const,
   locked: false,
   alphaLocked: false,
+  groupId: null,
 });
 
 const doc = (...ids: string[]): SavedDocument => ({

@@ -42,18 +42,22 @@ export async function exportArtwork(
 
 /** Layers cropped to their content, plus DrawThing's background as a layer of its own. */
 async function exportPsd(engine: Engine): Promise<Blob> {
-  const { width, height, background } = documentStore.getState();
+  const { width, height, background, groups } = documentStore.getState();
   const composite = engine.exportImage(false);
-  const layers: PsdLayerData[] = engine.exportLayers().map(({ meta, left, top, pixels }) => ({
-    name: meta.name,
-    visible: meta.visible,
-    opacity: meta.opacity,
-    blendMode: meta.blendMode,
-    alphaLocked: meta.alphaLocked,
-    left,
-    top,
-    pixels,
-  }));
+  const layers: PsdLayerData[] = engine.exportLayers().map(({ meta, left, top, pixels }) => {
+    const group = groups.findIndex((g) => g.id === meta.groupId);
+    return {
+      name: meta.name,
+      visible: meta.visible,
+      opacity: meta.opacity,
+      blendMode: meta.blendMode,
+      alphaLocked: meta.alphaLocked,
+      left,
+      top,
+      pixels,
+      group: group < 0 ? undefined : group,
+    };
+  });
   const bg = new Uint8ClampedArray(width * height * 4);
   const n = Number.parseInt(background.color.slice(1), 16);
   for (let i = 0; i < bg.length; i += 4) {
@@ -72,7 +76,7 @@ async function exportPsd(engine: Engine): Promise<Blob> {
     top: 0,
     pixels: { width, height, data: bg },
   });
-  return encodePsd({ width, height, layers, composite });
+  return encodePsd({ width, height, layers, groups, composite });
 }
 
 /** A saved project as a `.drawthing` file (works from the gallery, without opening it). */

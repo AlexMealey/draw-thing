@@ -2,7 +2,9 @@ import {
   BLEND_MODES,
   type Background,
   type DocumentState,
+  type LayerGroup,
   type LayerMeta,
+  normalizeGroups,
 } from '../state/documentStore';
 import { TILE } from '../engine/history/tiles';
 import { MAX_DOC_SIZE } from '../engine/limits';
@@ -19,8 +21,11 @@ export interface SavedDocument {
   background: Background;
   /** Index 0 is the bottom of the stack. */
   layers: LayerMeta[];
+  /** Absent in documents saved before groups existed. */
+  groups?: LayerGroup[];
   activeLayerId: string;
   layerCounter: number;
+  groupCounter?: number;
 }
 
 export const DEFAULT_NAME = 'Untitled Artwork';
@@ -33,8 +38,10 @@ export function toSaved(doc: DocumentState): SavedDocument {
     tileSize: TILE,
     background: { ...doc.background },
     layers: doc.layers.map((l) => ({ ...l })),
+    groups: doc.groups.map((g) => ({ ...g })),
     activeLayerId: doc.activeLayerId,
     layerCounter: doc.layerCounter,
+    groupCounter: doc.groupCounter,
   };
 }
 
@@ -69,12 +76,35 @@ export function parseSavedDocument(value: unknown): SavedDocument {
   if (!bg || typeof bg.color !== 'string' || !HEX.test(bg.color)) return fail('bad background');
   if (!Array.isArray(v.layers) || v.layers.length === 0) return fail('no layers');
   const ids = new Set<string>();
-  const layers = v.layers.map((raw: unknown): LayerMeta => {
+  const opacityOf = (o: unknown) => (typeof o === 'number' ? Math.min(1, Math.max(0, o)) : 1);
+  const groupIds = new Set<string>();
+  const rawGroups: LayerGroup[] = (Array.isArray(v.groups) ? v.groups : []).map(
+    (raw: unknown): LayerGroup => {
+      const g = (raw ?? {}) as Record<string, unknown>;
+      const id = g.id;
+      if (typeof id !== 'string' || !SAFE_ID.test(id) || groupIds.has(id) || ids.has(id)) {
+        fail('bad group id');
+      }
+      groupIds.add(id as string);
+      return {
+        id: id as string,
+        name: typeof g.name === 'string' ? g.name.slice(0, 200) : 'Group',
+        visible: g.visible !== false,
+        opacity: opacityOf(g.opacity),
+        locked: g.locked === true,
+        alphaLocked: g.alphaLocked === true,
+        collapsed: g.collapsed === true,
+      };
+    },
+  );
+  const rawLayers = v.layers.map((raw: unknown): LayerMeta => {
     const l = (raw ?? {}) as Record<string, unknown>;
-    if (typeof l.id !== 'string' || !SAFE_ID.test(l.id) || ids.has(l.id)) fail('bad layer id');
+    if (typeof l.id !== 'string' || !SAFE_ID.test(l.id) || ids.has(l.id) || groupIds.has(l.id)) {
+      fail('bad layer id');
+    }
     ids.add(l.id as string);
     const blendMode = BLEND_MODES.find((m) => m === l.blendMode) ?? 'normal';
-    const opacity = typeof l.opacity === 'number' ? Math.min(1, Math.max(0, l.opacity)) : 1;
+    const opacity = opacityOf(l.opacity);
     return {
       id: l.id as string,
       name: typeof l.name === 'string' ? l.name.slice(0, 200) : 'Layer',
@@ -83,8 +113,10 @@ export function parseSavedDocument(value: unknown): SavedDocument {
       blendMode,
       locked: l.locked === true,
       alphaLocked: l.alphaLocked === true,
+      groupId: typeof l.groupId === 'string' ? l.groupId : null,
     };
   });
+  const { layers, groups } = normalizeGroups(rawLayers, rawGroups);
   const active = typeof v.activeLayerId === 'string' && ids.has(v.activeLayerId);
   return {
     schema: 1,
@@ -93,10 +125,15 @@ export function parseSavedDocument(value: unknown): SavedDocument {
     tileSize: TILE,
     background: { color: bg.color, visible: bg.visible !== false },
     layers,
+    groups,
     activeLayerId: active ? (v.activeLayerId as string) : layers[layers.length - 1]!.id,
     layerCounter:
       typeof v.layerCounter === 'number' && v.layerCounter >= layers.length
         ? Math.floor(v.layerCounter)
         : layers.length,
+    groupCounter:
+      typeof v.groupCounter === 'number' && v.groupCounter >= groups.length
+        ? Math.floor(v.groupCounter)
+        : groups.length,
   };
 }

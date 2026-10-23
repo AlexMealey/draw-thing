@@ -86,13 +86,17 @@ export class Compositor {
     this.belowValid = this.aboveValid = false;
   }
 
-  /** Recomposites `out` within `dirty` (or entirely when null or when caches were rebuilt). */
+  /**
+   * Recomposites `out` within `dirty` (or entirely when null or when caches were rebuilt).
+   * `activePixels` stands in for the active layer's texture (an adjustment being previewed).
+   */
   render(
     layers: readonly GpuLayer[],
     active: number,
     background: Rgba | null,
     stroke: LiveStroke | null,
     dirty: Rect | null,
+    activePixels: Target | null = null,
   ): Target {
     if (active !== this.activeIndex) {
       this.activeIndex = active;
@@ -118,7 +122,7 @@ export class Compositor {
     this.copyRect(this.below, this.out, dirty);
     const a = layers[active];
     if (a && shows(a)) {
-      const src = stroke ? this.mergeStroke(a.target, stroke, dirty) : a.target;
+      const src = stroke ? this.mergeStroke(a.target, stroke, dirty) : (activePixels ?? a.target);
       this.blendLayer(this.out, src, a.opacity, a.blendMode, dirty);
     }
     if (aboveCacheable) {
@@ -175,6 +179,11 @@ export class Compositor {
     for (const l of layers)
       if (shows(l)) this.blendLayer(dst, l.target, l.opacity, l.blendMode, null);
     this.gl.disable(this.gl.SCISSOR_TEST);
+  }
+
+  /** Replaces `dst`'s pixels with `src`'s. */
+  copyTarget(src: Target, dst: Target) {
+    this.copyRect(src, dst, null);
   }
 
   clearTarget(t: Target, rect: Rect | null) {

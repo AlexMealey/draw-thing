@@ -41,7 +41,7 @@ const GESTURES: [string, string][] = [
   ['B / E / L / C', 'Brush, eraser, layers, color'],
   ['[ and ]', 'Smaller / bigger brush'],
   ['Ctrl/⌘ + and −', 'Zoom in / out'],
-  ['← and →', 'Rotate the canvas (turn on under Canvas view)'],
+  ['← and →', 'Rotate the canvas; hold to keep turning (turn on under Canvas view)'],
 ];
 
 export function ActionsPanel({
@@ -67,6 +67,8 @@ export function ActionsPanel({
   const sizeStep = useTools((s) => s.sizeStep);
   const keyZoomStep = useTools((s) => s.keyZoomStep);
   const newCanvasBackground = useTools((s) => s.newCanvasBackground);
+  const colorPicker = useTools((s) => s.colorPicker);
+  const colorSliders = useTools((s) => s.colorSliders);
   const { setPrefs } = toolStore.getState();
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -156,6 +158,32 @@ export function ActionsPanel({
         />
       </label>
 
+      <h3 className={ui.section}>Color</h3>
+      <div className={ui.switch} role="radiogroup" aria-label="Color picker">
+        Picker
+        <span style={{ display: 'flex', gap: 6 }}>
+          {(['square', 'wheel'] as const).map((p) => (
+            <button
+              key={p}
+              role="radio"
+              aria-checked={colorPicker === p}
+              className={`${ui.textButton} ${colorPicker === p ? ui.primary : ''}`}
+              onClick={() => setPrefs({ colorPicker: p })}
+            >
+              {p === 'square' ? 'Square' : 'Wheel'}
+            </button>
+          ))}
+        </span>
+      </div>
+      <label className={ui.switch}>
+        Hue, saturation, brightness and contrast sliders
+        <input
+          type="checkbox"
+          checked={colorSliders}
+          onChange={(e) => setPrefs({ colorSliders: e.target.checked })}
+        />
+      </label>
+
       <h3 className={ui.section}>Canvas view</h3>
       <label className={ui.switch}>
         Arrow keys rotate the canvas
@@ -169,11 +197,11 @@ export function ActionsPanel({
         <SliderRow
           label="Rotation step"
           value={arrowRotateStep}
-          min={1}
+          min={0}
           max={90}
-          step={1}
-          format={(v) => `${v}°`}
-          onChange={(v) => setPrefs({ arrowRotateStep: v })}
+          step={5}
+          format={() => `${arrowRotateStep}°`}
+          onChange={(v) => setPrefs({ arrowRotateStep: Math.max(1, v) })}
         />
       )}
       <label className={ui.switch}>

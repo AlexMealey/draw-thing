@@ -17,10 +17,13 @@ const doc: SavedDocument = {
       blendMode: 'normal',
       locked: false,
       alphaLocked: false,
+      groupId: null,
     },
   ],
+  groups: [],
   activeLayerId: 'layer-1',
   layerCounter: 1,
+  groupCounter: 0,
 };
 
 const bytes = (b: Blob) => b.arrayBuffer().then((a) => [...new Uint8Array(a)]);

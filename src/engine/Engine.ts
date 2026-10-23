@@ -3,9 +3,12 @@ import {
   type Background,
   documentStore,
   type DocumentState,
+  effectiveLayer,
+  type LayerGroup,
   type LayerMeta,
   makeLayer,
 } from '../state/documentStore';
+import { adjustmentStore } from '../state/adjustmentStore';
 import { historyStore } from '../state/historyStore';
 import { thumbnailStore } from '../state/thumbnailStore';
 import { parseHexColor } from './brush/color';
@@ -23,6 +26,13 @@ import {
   totalGlObjects,
 } from './gl/tracking';
 import type { SavedDocument } from '../persistence/document';
+import {
+  type AdjustmentKind,
+  type AdjustmentParams,
+  Filters,
+  isNeutral,
+  NEUTRAL_ADJUSTMENT,
+} from './filters/Filters';
 import { compressTile, inflateTile } from './history/compress';
 import {
   type DocSnapshot,
@@ -114,6 +124,25 @@ export interface LayerExport {
   pixels: ImageData | null;
 }
 
+const ADJUSTMENT_LABELS: Record<AdjustmentKind, string> = {
+  hsb: 'Hue/Saturation',
+  brightnessContrast: 'Brightness/Contrast',
+  gaussian: 'Gaussian blur',
+  motion: 'Motion blur',
+};
+
+/** An adjustment previewed on a layer until it's applied or cancelled. */
+interface Adjustment {
+  kind: AdjustmentKind;
+  params: AdjustmentParams;
+  layerId: string;
+  keepAlpha: boolean;
+  /** The filtered layer, shown in its place. */
+  out: Target;
+  /** The settings changed since `out` was rendered. */
+  dirty: boolean;
+}
+
 /** One in-progress stroke: its own copy of the tool settings and pipeline state. */
 interface Stroke {
   layerId: string;
@@ -157,6 +186,7 @@ export class Engine implements StrokeSink {
   private quad!: QuadPass;
   private compositor!: Compositor;
   private dabs!: DabRenderer;
+  private filters!: Filters;
   private presenter!: Presenter;
   private view = new ViewTransform();
   private input: PointerInput;
@@ -181,6 +211,7 @@ export class Engine implements StrokeSink {
   };
 
   private stroke: Stroke | null = null;
+  private adjustment: Adjustment | null = null;
   private strokeSeed = 1;
   private pending: 'commit' | 'cancel' | null = null;
   private queue: InputSample[] = [];
@@ -365,7 +396,8 @@ export class Engine implements StrokeSink {
   /** Clears the active layer. */
   clearLayer() {
     const doc = documentStore.getState();
-    const meta = doc.layers[activeIndex(doc)];
+    const raw = doc.layers[activeIndex(doc)];
+    const meta = raw && effectiveLayer(raw, doc.groups);
     const target = meta && this.layers.get(meta.id);
     if (!meta || !target || this.stroke) return;
     if (meta.locked) return this.notice(`${meta.name} is locked`);
@@ -392,6 +424,9 @@ export class Engine implements StrokeSink {
     const upper = doc.layers[i];
     const lower = doc.layers[i - 1];
     if (!upper || !lower) return this.notice('There’s no layer below to merge into');
+    if (upper.groupId !== lower.groupId) {
+      return this.notice('Only layers in the same group can be merged');
+    }
     const src = this.layers.get(upper.id);
     const dst = this.layers.get(lower.id);
     if (!src || !dst || this.stroke) return;
@@ -444,6 +479,71 @@ export class Engine implements StrokeSink {
       time: performance.now(),
       bytes: 0,
     });
+  }
+
+  /**
+   * Starts previewing an adjustment on the active layer (Adjustments). The layer changes only on
+   * applyAdjustment(); meanwhile painting and undo wait. False when the layer can't be adjusted.
+   */
+  beginAdjustment(kind: AdjustmentKind): boolean {
+    if (this.adjustment) this.cancelAdjustment();
+    if (this.stroke || this.lost) return false;
+    if (this.loading) {
+      this.notice('Still opening…');
+      return false;
+    }
+    const doc = documentStore.getState();
+    const meta = doc.layers[activeIndex(doc)];
+    if (!meta || !this.layers.has(meta.id)) return false;
+    const layer = effectiveLayer(meta, doc.groups);
+    if (layer.locked || !layer.visible) {
+      this.notice(`${layer.name} is ${layer.locked ? 'locked' : 'hidden'}`);
+      return false;
+    }
+    this.adjustment = {
+      kind,
+      params: { ...NEUTRAL_ADJUSTMENT },
+      layerId: meta.id,
+      keepAlpha: layer.alphaLocked,
+      out: createTarget(this.gl, this.docW, this.docH),
+      dirty: true,
+    };
+    adjustmentStore.setState({ kind });
+    this.markDirty('all');
+    return true;
+  }
+
+  /** Changes the previewed adjustment's settings (the preview updates next frame). */
+  setAdjustment(patch: Partial<AdjustmentParams>) {
+    const a = this.adjustment;
+    if (!a) return;
+    a.params = { ...a.params, ...patch };
+    a.dirty = true;
+    this.markDirty('all');
+  }
+
+  /** Bakes the previewed adjustment into the layer, as one undo step. */
+  applyAdjustment() {
+    const a = this.adjustment;
+    if (!a) return;
+    const target = this.layers.get(a.layerId);
+    if (!target || isNeutral(a.kind, a.params)) return this.cancelAdjustment();
+    if (a.dirty) this.runAdjustment(a, target);
+    const before = this.tileIO.readAll(target);
+    this.compositor.copyTarget(a.out, target);
+    this.endAdjustment();
+    this.markThumbs([a.layerId]);
+    this.pushHistory({
+      label: ADJUSTMENT_LABELS[a.kind],
+      pixels: new Map([[a.layerId, TileIO.diff(before, this.tileIO.readAll(target))]]),
+      time: performance.now(),
+      bytes: 0,
+    });
+  }
+
+  /** Drops the previewed adjustment; the layer is unchanged. */
+  cancelAdjustment() {
+    if (this.adjustment) this.endAdjustment();
   }
 
   /** The next touch on the canvas picks a color instead of painting. */
@@ -600,7 +700,7 @@ export class Engine implements StrokeSink {
       return false;
     }
     const before = snapshot(doc);
-    const layer = makeLayer(name);
+    const layer = { ...makeLayer(name), groupId: doc.layers[activeIndex(doc)]?.groupId ?? null };
     const target = createTarget(this.gl, this.docW, this.docH);
     this.tileIO.write(target, tiles);
     this.layers.set(layer.id, target); // registered before the store change, so it's kept
@@ -617,10 +717,12 @@ export class Engine implements StrokeSink {
   }
 
   undo() {
+    if (this.adjustment) return this.notice('Apply or cancel the adjustment first');
     if (!this.stroke && !this.loading && !this.lost) this.enqueueHistory('undo');
   }
 
   redo() {
+    if (this.adjustment) return this.notice('Apply or cancel the adjustment first');
     if (!this.stroke && !this.loading && !this.lost) this.enqueueHistory('redo');
   }
 
@@ -742,6 +844,8 @@ export class Engine implements StrokeSink {
     this.thumbnailer.dispose();
     this.galleryThumbnailer?.dispose();
     this.dabs.dispose();
+    this.filters.dispose();
+    if (this.adjustment) this.endAdjustment();
     this.presenter.dispose();
     this.compositor.dispose();
     this.quad.dispose();
@@ -758,6 +862,7 @@ export class Engine implements StrokeSink {
     this.quad = new QuadPass(gl);
     this.compositor = new Compositor(gl, this.quad, this.docW, this.docH);
     this.dabs = new DabRenderer(gl);
+    this.filters = new Filters(gl, this.quad);
     this.presenter = new Presenter(gl, this.quad);
     this.thumbnailer = new Thumbnailer(gl, this.docW, this.docH);
     this.galleryThumbnailer = null;
@@ -770,9 +875,11 @@ export class Engine implements StrokeSink {
     if (this.pending) this.renderNow(); // pen lifted and touched down within one frame
     if (this.lost) return;
     if (this.loading) return this.notice('Still opening…');
+    if (this.adjustment) return this.notice('Apply or cancel the adjustment first');
     const doc = documentStore.getState();
-    const layer = doc.layers[activeIndex(doc)];
-    if (!layer) return;
+    const meta = doc.layers[activeIndex(doc)];
+    if (!meta) return;
+    const layer = effectiveLayer(meta, doc.groups); // a group's locks and visibility apply
     if (layer.locked) return this.notice(`${layer.name} is locked`);
     if (!layer.visible) return this.notice(`${layer.name} is hidden`);
 
@@ -836,6 +943,23 @@ export class Engine implements StrokeSink {
     this.pending = 'cancel';
     this.queue.length = 0;
     this.requestFrame();
+  }
+
+  // ── Adjustments ─────────────────────────────────────────────────────────────
+
+  private runAdjustment(a: Adjustment, layer: Target) {
+    // The stroke buffer is idle while an adjustment is open: it serves as the scratch target.
+    this.filters.run(a.kind, a.params, layer, a.out, this.strokeBuf, a.keepAlpha);
+    a.dirty = false;
+  }
+
+  private endAdjustment() {
+    const a = this.adjustment;
+    if (!a) return;
+    this.adjustment = null;
+    if (!this.lost) deleteTarget(this.gl, a.out);
+    adjustmentStore.setState({ kind: null });
+    this.markDirty('all');
   }
 
   // ── Frame loop ──────────────────────────────────────────────────────────────
@@ -931,7 +1055,13 @@ export class Engine implements StrokeSink {
     }
     const live = this.stroke;
 
-    // 3. Recomposite whatever changed in the document.
+    // 3. Recomposite whatever changed in the document, with an adjustment's preview in place of
+    //    its layer.
+    const adjustment = this.adjustment?.layerId === doc.activeLayerId ? this.adjustment : null;
+    if (adjustment?.dirty) {
+      const target = this.layers.get(adjustment.layerId);
+      if (target) this.runAdjustment(adjustment, target);
+    }
     if (this.docDirty) {
       const rect = this.docDirty === 'all' ? null : clampRect(this.docDirty, this.docW, this.docH);
       if (this.docDirty === 'all' || rect) {
@@ -942,6 +1072,7 @@ export class Engine implements StrokeSink {
           backgroundColor(doc),
           live && showStroke ? this.liveStroke(live) : null,
           rect,
+          adjustment?.out ?? null,
         );
       }
       this.docDirty = null;
@@ -1026,11 +1157,14 @@ export class Engine implements StrokeSink {
   private canPreviewOnTop(stroke: Stroke, doc: DocumentState): boolean {
     if (stroke.mode !== 'paint' || stroke.layerId !== doc.activeLayerId) return false;
     const i = activeIndex(doc);
-    const layer = doc.layers[i];
+    const layer = doc.layers[i] && effectiveLayer(doc.layers[i], doc.groups);
     return (
       layer?.blendMode === 'normal' &&
       layer.opacity === 1 &&
-      !doc.layers.slice(i + 1).some((l) => l.visible && l.opacity > 0)
+      !doc.layers
+        .slice(i + 1)
+        .map((l) => effectiveLayer(l, doc.groups))
+        .some((l) => l.visible && l.opacity > 0)
     );
   }
 
@@ -1046,7 +1180,7 @@ export class Engine implements StrokeSink {
     const out: GpuLayer[] = [];
     for (const meta of doc.layers) {
       const target = this.layers.get(meta.id);
-      if (target) out.push({ ...meta, target });
+      if (target) out.push({ ...effectiveLayer(meta, doc.groups), target });
     }
     return out;
   }
@@ -1077,16 +1211,23 @@ export class Engine implements StrokeSink {
 
   private onDocumentChange = (doc: DocumentState, prev: DocumentState) => {
     if (this.disposed || this.lost) return;
+    const a = this.adjustment;
+    if (a && (doc.activeLayerId !== a.layerId || !doc.layers.some((l) => l.id === a.layerId))) {
+      this.endAdjustment(); // the preview belongs to a layer that's no longer the one selected
+    }
     // Record before syncLayers frees the textures of deleted layers.
     if (
       this.suppressRecord === 0 &&
-      (doc.layers !== prev.layers || doc.background !== prev.background)
+      (doc.layers !== prev.layers ||
+        doc.groups !== prev.groups ||
+        doc.background !== prev.background)
     ) {
       this.recordDocChange(prev, doc);
     }
     if (doc.layers !== prev.layers) this.syncLayers(doc);
     if (
       doc.layers !== prev.layers ||
+      doc.groups !== prev.groups ||
       doc.activeLayerId !== prev.activeLayerId ||
       doc.background !== prev.background
     ) {
@@ -1166,7 +1307,9 @@ export class Engine implements StrokeSink {
 
     const doc = entry.doc?.[side];
     if (doc)
-      this.withoutRecording(() => documentStore.setState({ ...doc, layers: [...doc.layers] }));
+      this.withoutRecording(() =>
+        documentStore.setState({ ...doc, layers: [...doc.layers], groups: [...doc.groups] }),
+      );
     for (const [layerId, tiles] of writes) {
       const target = this.layers.get(layerId);
       if (target) this.tileIO.write(target, tiles);
@@ -1439,6 +1582,7 @@ export class Engine implements StrokeSink {
       this.history.remove(entry);
     }
     this.captures.clear();
+    if (this.adjustment) this.endAdjustment(); // its texture died with the context
     engineStats.contextLosses++;
     this.opts.onContextLost?.();
   };
@@ -1485,7 +1629,12 @@ function backgroundColor(doc: DocumentState): Rgba | null {
 }
 
 function snapshot(doc: DocumentState): DocSnapshot {
-  return { layers: doc.layers, activeLayerId: doc.activeLayerId, background: doc.background };
+  return {
+    layers: doc.layers,
+    groups: doc.groups,
+    activeLayerId: doc.activeLayerId,
+    background: doc.background,
+  };
 }
 
 const FIELD_LABELS: Partial<Record<keyof LayerMeta, string>> = {
@@ -1496,6 +1645,48 @@ const FIELD_LABELS: Partial<Record<keyof LayerMeta, string>> = {
   locked: 'Lock layer',
   alphaLocked: 'Alpha lock',
 };
+
+const GROUP_LABELS: Partial<Record<keyof LayerGroup, string>> = {
+  name: 'Rename group',
+  visible: 'Group visibility',
+  opacity: 'Group opacity',
+  locked: 'Lock group',
+  alphaLocked: 'Alpha lock group',
+};
+
+/** Group created, dissolved or edited; null when it's something else (or only collapsing). */
+function describeGroupChange(
+  prev: DocumentState,
+  doc: DocumentState,
+): { label: string | null; coalesceKey?: string } | null {
+  if (doc.groups.length > prev.groups.length) return { label: 'Group layer' };
+  if (doc.groups.length < prev.groups.length) {
+    const sameOrder = doc.layers.every((l, i) => l.id === prev.layers[i]?.id);
+    return sameOrder ? { label: 'Ungroup' } : null;
+  }
+  if (doc.layers !== prev.layers) return null;
+  const changed = doc.groups.filter((g, i) => g !== prev.groups[i]);
+  const group = changed[0];
+  const before = group && prev.groups.find((p) => p.id === group.id);
+  if (changed.length !== 1 || !group || !before) return { label: 'Groups' };
+  const fields = changedKeys(before, group);
+  if (fields.join() === 'collapsed') return { label: null }; // panel state, not an edit
+  return {
+    label: GROUP_LABELS[fields.find((f) => f !== 'collapsed') ?? 'name'] ?? 'Group',
+    coalesceKey: fields.join() === 'opacity' ? `group-opacity:${group.id}` : undefined,
+  };
+}
+
+/** Whether a reorder moved a whole group (several layers, none changing group). */
+function movedWholeGroup(prev: DocumentState, doc: DocumentState): boolean {
+  const before = new Map(prev.layers.map((l) => [l.id, l.groupId]));
+  if (doc.layers.some((l) => before.get(l.id) !== l.groupId)) return false;
+  const moved = new Set(doc.layers.filter((l, i) => l.id !== prev.layers[i]?.id).map((l) => l.id));
+  return doc.groups.some((g) => {
+    const members = doc.layers.filter((l) => l.groupId === g.id);
+    return members.length > 1 && members.every((l) => moved.has(l.id));
+  });
+}
 
 const changedKeys = <T extends object>(a: T, b: T) =>
   (Object.keys(b) as (keyof T)[]).filter((k) => a[k] !== b[k]);
@@ -1510,10 +1701,18 @@ function describeChange(
     const key = fields.join() === 'color' ? 'background:color' : undefined;
     return { label: 'Background', coalesceKey: key };
   }
+  if (doc.groups !== prev.groups && doc.layers.length === prev.layers.length) {
+    const group = describeGroupChange(prev, doc);
+    if (group) return group;
+  }
   if (doc.layers === prev.layers) return { label: null };
   if (doc.layers.length > prev.layers.length) return { label: 'Add layer' };
-  if (doc.layers.length < prev.layers.length) return { label: 'Delete layer' };
-  if (doc.layers.some((l, i) => l.id !== prev.layers[i]?.id)) return { label: 'Move layer' };
+  if (doc.layers.length < prev.layers.length) {
+    return { label: doc.groups.length < prev.groups.length ? 'Delete group' : 'Delete layer' };
+  }
+  if (doc.layers.some((l, i) => l.id !== prev.layers[i]?.id)) {
+    return { label: movedWholeGroup(prev, doc) ? 'Move group' : 'Move layer' };
+  }
   const changed = doc.layers.filter((l, i) => l !== prev.layers[i]);
   const layer = changed[0];
   const before = layer && prev.layers.find((p) => p.id === layer.id);

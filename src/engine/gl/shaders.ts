@@ -133,3 +133,104 @@ void main() {
   vec3 checker = mix(vec3(1.0), vec3(0.82), k);
   o = vec4(c.rgb + checker * (1.0 - c.a), 1.0);
 }`;
+
+/**
+ * Color adjustments on premultiplied pixels (alpha is kept): hue rotation, saturation, brightness
+ * and contrast. Neutral values: 0, 0, 0 and a contrast factor of 1.
+ */
+export const ADJUST_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+uniform float u_hue;        // turns
+uniform float u_saturation; // -1..1
+uniform float u_brightness; // -1..1
+uniform float u_contrast;   // factor around mid-gray
+out vec4 o;
+
+vec3 rgb2hsv(vec3 c) {
+  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  float e = 1.0e-10;
+  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+vec3 hsv2rgb(vec3 c) {
+  vec3 p = abs(fract(c.xxx + vec3(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+  return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
+}
+
+void main() {
+  vec4 px = texture(u_src, v_uv);
+  if (px.a <= 0.0) {
+    o = vec4(0.0);
+    return;
+  }
+  vec3 hsv = rgb2hsv(px.rgb / px.a);
+  hsv.x = fract(hsv.x + u_hue);
+  hsv.y = clamp(hsv.y * (1.0 + u_saturation), 0.0, 1.0);
+  vec3 c = hsv2rgb(hsv);
+  c = u_brightness >= 0.0 ? mix(c, vec3(1.0), u_brightness) : c * (1.0 + u_brightness);
+  c = clamp((c - 0.5) * u_contrast + 0.5, 0.0, 1.0);
+  o = vec4(c * px.a, px.a);
+}`;
+
+/**
+ * One direction of a separable Gaussian blur, on premultiplied pixels. `u_step` is the uv offset
+ * between taps (wider than a pixel for big radii; bilinear sampling fills in), `u_sigma` is in taps.
+ */
+export const GAUSS_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+uniform vec2 u_step;
+uniform float u_sigma;
+uniform int u_taps;
+out vec4 o;
+// Alpha-locked layers keep their own alpha: blurring only moves color around inside it.
+uniform bool u_keepAlpha;
+uniform sampler2D u_alpha;
+vec4 keepAlpha(vec4 f) {
+  if (!u_keepAlpha) return f;
+  float a = texture(u_alpha, v_uv).a;
+  return vec4((f.a > 0.0 ? f.rgb / f.a : vec3(0.0)) * a, a);
+}
+void main() {
+  vec4 sum = texture(u_src, v_uv);
+  float total = 1.0;
+  for (int i = 1; i <= 64; i++) {
+    if (i > u_taps) break;
+    float x = float(i);
+    float w = exp(-0.5 * x * x / (u_sigma * u_sigma));
+    sum += (texture(u_src, v_uv + u_step * x) + texture(u_src, v_uv - u_step * x)) * w;
+    total += 2.0 * w;
+  }
+  o = keepAlpha(sum / total);
+}`;
+
+/** Box blur along a line: `u_span` is the whole line in uv, centered on the pixel. */
+export const MOTION_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+uniform vec2 u_span;
+uniform int u_samples;
+out vec4 o;
+// Alpha-locked layers keep their own alpha: blurring only moves color around inside it.
+uniform bool u_keepAlpha;
+uniform sampler2D u_alpha;
+vec4 keepAlpha(vec4 f) {
+  if (!u_keepAlpha) return f;
+  float a = texture(u_alpha, v_uv).a;
+  return vec4((f.a > 0.0 ? f.rgb / f.a : vec3(0.0)) * a, a);
+}
+void main() {
+  vec4 sum = vec4(0.0);
+  for (int i = 0; i < 64; i++) {
+    if (i >= u_samples) break;
+    sum += texture(u_src, v_uv + u_span * ((float(i) + 0.5) / float(u_samples) - 0.5));
+  }
+  o = keepAlpha(sum / float(u_samples));
+}`;

@@ -1,6 +1,7 @@
 import type { ToolMode } from '../../state/toolStore';
 import {
   ActionsIcon,
+  AdjustIcon,
   BrushIcon,
   EraserIcon,
   GalleryIcon,
@@ -44,6 +45,14 @@ export function TopBar({ open, mode, color, onGallery, onToggle, onTool }: Props
           onClick={() => onToggle('share')}
         >
           <ShareIcon />
+        </button>
+        <button
+          className={ui.iconButton}
+          aria-label="Adjustments"
+          aria-expanded={open === 'adjustments'}
+          onClick={() => onToggle('adjustments')}
+        >
+          <AdjustIcon />
         </button>
       </div>
       <div className={styles.group}>

@@ -4,6 +4,7 @@ import { History } from './History';
 
 const snap = (activeLayerId: string): DocSnapshot => ({
   layers: [],
+  groups: [],
   activeLayerId,
   background: { color: '#fff', visible: true },
 });

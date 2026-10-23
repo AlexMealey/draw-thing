@@ -10,6 +10,8 @@ import {
 import { CanvasViewport } from '../CanvasViewport';
 import type { OpenProject, Session } from '../project';
 import { ActionsPanel } from './ActionsPanel';
+import { AdjustmentsPanel } from './AdjustmentsPanel';
+import { ArrowRotation } from './arrowRotation';
 import { SharePanel } from './SharePanel';
 import { BrushLibrary } from './BrushLibrary';
 import { BrushSettings } from './BrushSettings';
@@ -23,7 +25,8 @@ import { TopBar } from './TopBar';
 const TOPBAR = 60;
 const SIDEBAR = 64;
 
-export type PanelId = 'brushes' | 'brushSettings' | 'layers' | 'color' | 'actions' | 'share';
+export type PanelId =
+  'brushes' | 'brushSettings' | 'layers' | 'color' | 'actions' | 'share' | 'adjustments';
 
 interface Props {
   project: OpenProject;
@@ -120,6 +123,10 @@ export function EditorScreen({
 
   // Keyboard shortcuts (Ctrl/⌘ combinations are handled by the engine).
   useEffect(() => {
+    const rotation = new ArrowRotation(
+      (degrees) => engine()?.rotateView(degrees),
+      () => toolStore.getState().arrowRotateStep,
+    );
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey || isTyping(e.target)) return;
       const tools = toolStore.getState();
@@ -152,9 +159,8 @@ export function EditorScreen({
         case 'ArrowRight':
           // Arrow keys also move sliders and radio buttons: leave them to focused controls.
           if (!tools.arrowRotate || isControl(e.target)) return;
-          engine()?.rotateView(
-            e.key === 'ArrowLeft' ? -tools.arrowRotateStep : tools.arrowRotateStep,
-          );
+          // Holding turns continuously (ArrowRotation), so key-repeat is ignored.
+          if (!e.repeat) rotation.press(e.key === 'ArrowLeft' ? -1 : 1);
           break;
         case 'Escape':
           setOpen(null);
@@ -165,8 +171,20 @@ export function EditorScreen({
       }
       e.preventDefault();
     };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') rotation.release(-1);
+      else if (e.key === 'ArrowRight') rotation.release(1);
+    };
+    const stop = () => rotation.release();
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', stop);
+    return () => {
+      rotation.release();
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', stop);
+    };
   }, [toggle, engine]);
 
   const close = () => setOpen(null);
@@ -189,7 +207,8 @@ export function EditorScreen({
       <main
         className={styles.canvasHost}
         aria-label="Canvas"
-        onPointerDownCapture={() => open && setOpen(null)}
+        // Adjustments stay open so the canvas can be pinched and panned to inspect the preview.
+        onPointerDownCapture={() => open && open !== 'adjustments' && setOpen(null)}
       >
         <CanvasViewport
           tool={tool}
@@ -242,8 +261,16 @@ export function EditorScreen({
               onOpen={setSettingsFor}
             />
           )}
-          {open === 'layers' && <LayersPanel engine={engine} onClose={close} onNotice={onNotice} />}
+          {open === 'layers' && (
+            <LayersPanel
+              engine={engine}
+              onClose={close}
+              onNotice={onNotice}
+              onAdjust={() => setOpen('adjustments')}
+            />
+          )}
           {open === 'color' && <ColorPanel onClose={close} />}
+          {open === 'adjustments' && <AdjustmentsPanel engine={engine} onClose={close} />}
           {open === 'actions' && (
             <ActionsPanel
               project={project}

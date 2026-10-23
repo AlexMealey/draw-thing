@@ -1,4 +1,4 @@
-import type { Background, LayerMeta } from '../../state/documentStore';
+import type { Background, LayerGroup, LayerMeta } from '../../state/documentStore';
 
 /** Premultiplied RGBA8 tile bytes, the same deflated, or null for a fully transparent tile. */
 export type TileData = Uint8Array | Blob | null;
@@ -13,6 +13,7 @@ export type LayerTiles = Map<number, TileChange>;
 
 export interface DocSnapshot {
   layers: readonly LayerMeta[];
+  groups: readonly LayerGroup[];
   activeLayerId: string;
   background: Background;
 }

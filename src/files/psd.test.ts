@@ -41,4 +41,35 @@ describe('PSD', () => {
     expect(ink.pixels).toMatchObject({ width: 4, height: 3 });
     expect([...ink.pixels!.data.subarray(0, 4)]).toEqual([255, 0, 0, 128]);
   });
+
+  it('keeps one level of groups', () => {
+    const layer = (name: string, group?: number) => ({
+      name,
+      visible: true,
+      opacity: 1,
+      blendMode: 'normal' as const,
+      alphaLocked: false,
+      left: 0,
+      top: 0,
+      pixels: null,
+      group,
+    });
+    const bytes = writePsdFile({
+      width: 8,
+      height: 8,
+      layers: [layer('a'), layer('b', 0), layer('c', 0), layer('d')],
+      groups: [{ name: 'Inks', visible: false, opacity: 0.5, alphaLocked: true }],
+    });
+    const psd = readPsdFile(bytes.buffer as ArrayBuffer);
+    expect(psd.layers.map((l) => [l.name, l.group])).toEqual([
+      ['a', undefined],
+      ['b', 0],
+      ['c', 0],
+      ['d', undefined],
+    ]);
+    expect(psd.groups).toHaveLength(1);
+    expect(psd.groups![0]).toMatchObject({ name: 'Inks', visible: false, alphaLocked: true });
+    expect(psd.groups![0]!.opacity).toBeCloseTo(0.5, 2);
+    expect(psd.layers[1]!.visible).toBe(true); // the group's visibility stays the group's
+  });
 });
