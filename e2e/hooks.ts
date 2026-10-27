@@ -7,6 +7,7 @@ export interface EngineHook {
   debugHash(): string;
   undo(): void;
   redo(): void;
+  rotateView(degrees: number): void;
   whenIdle(): Promise<void>;
 }
 

@@ -4,6 +4,7 @@ import {
   documentStore,
   type DocumentState,
   effectiveLayer,
+  flattenPlan,
   type LayerGroup,
   type LayerMeta,
   makeLayer,
@@ -11,6 +12,7 @@ import {
 import { adjustmentStore } from '../state/adjustmentStore';
 import { historyStore } from '../state/historyStore';
 import { thumbnailStore } from '../state/thumbnailStore';
+import { viewStore } from '../state/viewStore';
 import { parseHexColor } from './brush/color';
 import { DabGenerator } from './brush/DabGenerator';
 import { type BrushPreset, DEFAULT_PRESET_ID, presetById } from './brush/presets';
@@ -279,6 +281,7 @@ export class Engine implements StrokeSink {
     this.createGpu();
     this.tileIO = new TileIO(gl, tileGrid(this.docW, this.docH));
     thumbnailStore.setState({ urls: {} });
+    viewStore.setState({ rotation: 0 });
     this.history = new History(
       { maxBytes: historyBudgetBytes(), maxEntries: 250 },
       this.publishHistory,
@@ -386,10 +389,15 @@ export class Engine implements StrokeSink {
 
   /** Rotates the view about the middle of the area the UI leaves clear (positive = clockwise). */
   rotateView(degrees: number) {
-    const { top, right, bottom, left } = this.insets;
-    const x = left + (this.viewW - left - right) / 2;
-    const y = top + (this.viewH - top - bottom) / 2;
+    const [x, y] = this.clearCenter();
     this.view.rotateAt((degrees * Math.PI) / 180, x, y);
+    this.requestFrame();
+  }
+
+  /** Turns the canvas back to 0° about the middle of the clear area, keeping the zoom. */
+  resetRotation() {
+    const [x, y] = this.clearCenter();
+    this.view.resetRotation(x, y);
     this.requestFrame();
   }
 
@@ -474,6 +482,41 @@ export class Engine implements StrokeSink {
     this.withoutRecording(() => doc.replaceLayers([layer], layer.id));
     this.pushHistory({
       label: 'Flatten',
+      doc: { before, after: snapshot(documentStore.getState()) },
+      pixels,
+      time: performance.now(),
+      bytes: 0,
+    });
+  }
+
+  /**
+   * Composites the given layers into one, in the topmost one's place; layers in between stay as
+   * they are. Hidden layers are discarded, as in Flatten. Layers that all share a group stay in it.
+   */
+  flattenLayers(ids: readonly string[]) {
+    const doc = documentStore.getState();
+    const plan = flattenPlan(doc, ids);
+    if (!plan || this.stroke) return;
+    const before = snapshot(doc);
+    const pixels = new Map<string, LayerTiles>();
+    const sources: GpuLayer[] = [];
+    for (const meta of plan.sources) {
+      const t = this.layers.get(meta.id);
+      if (!t) continue;
+      pixels.set(meta.id, TileIO.diff(this.tileIO.readAll(t), new Map()));
+      // A shared group still applies to the merged layer, so it isn't baked in.
+      sources.push({ ...(plan.groupId ? meta : effectiveLayer(meta, doc.groups)), target: t });
+    }
+    const target = createTarget(this.gl, this.docW, this.docH);
+    this.compositor.flattenInto(sources, target, null);
+    const layer = { ...makeLayer(plan.name), groupId: plan.groupId };
+    pixels.set(layer.id, TileIO.diff(new Map(), this.tileIO.readAll(target)));
+    const layers = [...plan.rest];
+    layers.splice(plan.index, 0, layer);
+    this.layers.set(layer.id, target); // registered before the store change, so it's kept
+    this.withoutRecording(() => doc.replaceLayers(layers, layer.id));
+    this.pushHistory({
+      label: 'Flatten layers',
       doc: { before, after: snapshot(documentStore.getState()) },
       pixels,
       time: performance.now(),
@@ -1133,6 +1176,8 @@ export class Engine implements StrokeSink {
     perf.firstFrameMs ??= end;
     engineStats.zoomPercent = this.view.scale * dpr * 100;
     engineStats.rotationDeg = (this.view.rotation * 180) / Math.PI;
+    const rotation = Math.round(engineStats.rotationDeg * 10) / 10 || 0; // never -0
+    if (rotation !== viewStore.getState().rotation) viewStore.setState({ rotation });
     if (this.captures.size > 0) this.requestFrame(); // keep polling the GPU readbacks
   };
 
@@ -1166,6 +1211,12 @@ export class Engine implements StrokeSink {
         .map((l) => effectiveLayer(l, doc.groups))
         .some((l) => l.visible && l.opacity > 0)
     );
+  }
+
+  /** The middle of the view area the UI leaves clear, in view px. */
+  private clearCenter(): [number, number] {
+    const { top, right, bottom, left } = this.insets;
+    return [left + (this.viewW - left - right) / 2, top + (this.viewH - top - bottom) / 2];
   }
 
   private markDirty(r: Rect | null | 'all') {
@@ -1659,7 +1710,12 @@ function describeGroupChange(
   prev: DocumentState,
   doc: DocumentState,
 ): { label: string | null; coalesceKey?: string } | null {
-  if (doc.groups.length > prev.groups.length) return { label: 'Group layer' };
+  // Grouping can also empty (and drop) other groups, so look for the new group itself.
+  const added = doc.groups.find((g) => !prev.groups.some((p) => p.id === g.id));
+  if (added) {
+    const members = doc.layers.filter((l) => l.groupId === added.id).length;
+    return { label: members > 1 ? 'Group layers' : 'Group layer' };
+  }
   if (doc.groups.length < prev.groups.length) {
     const sameOrder = doc.layers.every((l, i) => l.id === prev.layers[i]?.id);
     return sameOrder ? { label: 'Ungroup' } : null;

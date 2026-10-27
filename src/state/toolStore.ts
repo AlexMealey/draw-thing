@@ -1,10 +1,11 @@
 import { useStore } from 'zustand';
-import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware';
+import { createJSONStorage, persist } from 'zustand/middleware';
 import { createStore } from 'zustand/vanilla';
 import { type BrushOverride, resolvePreset } from '../engine/brush/overrides';
 import { type BrushPreset, DEFAULT_PRESET_ID, PRESETS, presetById } from '../engine/brush/presets';
 import type { ToolSettings } from '../engine/brush/tool';
 import { type Background, DEFAULT_BACKGROUND } from './documentStore';
+import { safeStorage } from './safeStorage';
 
 export type ToolMode = 'paint' | 'erase';
 export type ColorPicker = 'square' | 'wheel';
@@ -89,7 +90,7 @@ type Pref =
   | 'colorPicker'
   | 'colorSliders';
 
-const MAX_RECENT = 10;
+const MAX_RECENT = 16;
 const MODES: readonly ToolMode[] = ['paint', 'erase'];
 const DEFAULT_IDS: Record<ToolMode, string> = { paint: DEFAULT_PRESET_ID, erase: 'airbrush' };
 
@@ -107,31 +108,6 @@ function nextName(name: string, customs: readonly CustomBrush[]): string {
   while (taken.has(`${base} ${n}`)) n += 1;
   return `${base} ${n}`;
 }
-
-/** localStorage that never throws (private mode, blocked storage): prefs just won't persist. */
-const safeStorage: StateStorage = {
-  getItem: (k) => {
-    try {
-      return localStorage.getItem(k);
-    } catch {
-      return null;
-    }
-  },
-  setItem: (k, v) => {
-    try {
-      localStorage.setItem(k, v);
-    } catch {
-      // ignore
-    }
-  },
-  removeItem: (k) => {
-    try {
-      localStorage.removeItem(k);
-    } catch {
-      // ignore
-    }
-  },
-};
 
 export function defaultAdjustments(preset: BrushPreset, mode: ToolMode): BrushAdjustments {
   return {

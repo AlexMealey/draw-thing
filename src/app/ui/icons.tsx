@@ -113,6 +113,14 @@ export const AdjustIcon = () => (
   </Icon>
 );
 
+/** Reset rotation: an arrow turning back. */
+export const RotateIcon = () => (
+  <Icon>
+    <path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3" />
+    <path d="M4.5 4v4h4" />
+  </Icon>
+);
+
 export const HandleIcon = () => (
   <Icon>
     <path d="M5 9h14M5 15h14" />

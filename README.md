@@ -7,9 +7,13 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the architecture and phased plan.
 
 - the WebGL2 engine, pen input and gestures
 - the brush engine (Ink, Pencil, Airbrush, Marker, Chalk, plus an eraser)
-- layers with blend modes, and undo/redo
+- layers with blend modes and groups, and undo/redo
 - the full interface: top bar, sidebar, brush library and settings with pressure curves, colour
   picker, layers panel with thumbnails and drag-to-reorder, eyedropper, and keyboard shortcuts
+- colour palettes: make and edit them, import and export Procreate `.swatches` and GIMP `.gpl`
+  files, or pick N colours from an image; 16 recent colours
+- several layers selected at once to group or flatten them, and a one-tap reset of the canvas
+  rotation
 - saving: every change is autosaved on the device, the app reopens the last artwork, and the
   gallery lists saved artworks (rename, duplicate, delete)
 - export to PNG, JPEG, layered PSD and `.drawthing` (lossless backup); import of those, plus
@@ -203,8 +207,10 @@ Add query flags once. They're remembered per device, so the installed app keeps 
 
 ```
 src/
-  app/        React UI: editor/ (top bar, sidebar, panels), gallery/, ui/ (panel, sliders, icons)
-  state/      Zustand stores: document (layers), tools (persisted per device), history, thumbnails
+  app/        React UI: editor/ (top bar, sidebar, panels), gallery/, ui/ (panel, modal, sliders,
+              icons), palette/ (palette files, colours from an image)
+  state/      Zustand stores: document (layers), tools and palettes (persisted per device), history,
+              thumbnails, view
   engine/     WebGL2 engine: input, gestures, view transform, brush, layers, history, rendering
   persistence/  IndexedDB projects and tiles, the autosaver, the saved document format
   files/      export and import: PNG/JPEG, PSD (ag-psd, in a worker), .drawthing (zip), delivery

@@ -89,6 +89,12 @@ export interface DocumentState {
   replaceLayers(layers: LayerMeta[], activeId: string): void;
   /** Puts an ungrouped layer into a new group. Returns the group's id, or null. */
   groupLayer(id: string): string | null;
+  /**
+   * Puts layers from anywhere in the stack (in or out of groups) into a new group, gathered in
+   * stack order where the topmost of them was, but never inside another group. Groups left empty
+   * go. Returns the new group's id, or null when none of the ids is a layer.
+   */
+  groupLayers(ids: readonly string[]): string | null;
   /** Dissolves a group; its layers stay where they are. */
   ungroup(groupId: string): void;
   updateGroup(id: string, patch: Partial<Omit<LayerGroup, 'id'>>): void;
@@ -117,6 +123,7 @@ export type DocumentData = Omit<
   | 'setBackground'
   | 'replaceLayers'
   | 'groupLayer'
+  | 'groupLayers'
   | 'ungroup'
   | 'updateGroup'
   | 'removeGroup'
@@ -225,6 +232,58 @@ export function layerRows(state: Pick<DocumentState, 'layers' | 'groups'>): Laye
 function groupAround(layers: readonly LayerMeta[], index: number): string | null {
   const below = layers[index - 1]?.groupId ?? null;
   return below !== null && layers[index]?.groupId === below ? below : null;
+}
+
+/**
+ * Where something taking the place of `topId` goes in `rest` (the stack without the layers being
+ * moved): just above the layers of `rest` that were below it. Unless it belongs to `groupId`, it
+ * never lands inside another group: it goes above that group.
+ */
+function slotBelow(
+  layers: readonly LayerMeta[],
+  rest: readonly LayerMeta[],
+  topId: string,
+  groupId: string | null,
+): number {
+  const top = layers.findIndex((l) => l.id === topId);
+  const keep = new Set(rest.map((l) => l.id));
+  let at = layers.slice(0, top).filter((l) => keep.has(l.id)).length;
+  while (groupAround(rest, at) !== null && groupAround(rest, at) !== groupId) at++;
+  return at;
+}
+
+/** What Flatten does to selected layers: they become one layer, in the topmost one's place. */
+export interface FlattenPlan {
+  /** The layers merged, bottom first. */
+  sources: LayerMeta[];
+  /** The stack without them. */
+  rest: LayerMeta[];
+  /** Where the merged layer goes in `rest`. */
+  index: number;
+  /** The group all of them share (it then still applies to the merged layer), else null. */
+  groupId: string | null;
+  /** The topmost layer's name. */
+  name: string;
+}
+
+/** Null unless at least two of the ids are layers. */
+export function flattenPlan(
+  state: Pick<DocumentState, 'layers'>,
+  ids: readonly string[],
+): FlattenPlan | null {
+  const picked = new Set(ids);
+  const sources = state.layers.filter((l) => picked.has(l.id));
+  if (sources.length < 2) return null;
+  const top = sources[sources.length - 1]!;
+  const shared = sources.every((l) => l.groupId === top.groupId) ? top.groupId : null;
+  const rest = state.layers.filter((l) => !picked.has(l.id));
+  return {
+    sources,
+    rest,
+    index: slotBelow(state.layers, rest, top.id, shared),
+    groupId: shared,
+    name: top.name,
+  };
 }
 
 export function activeIndex(state: Pick<DocumentState, 'layers' | 'activeLayerId'>): number {
@@ -352,16 +411,25 @@ export const documentStore = createStore<DocumentState>()((set, get) => {
     },
 
     groupLayer(id) {
+      const layer = get().layers.find((l) => l.id === id);
+      return layer && layer.groupId === null ? get().groupLayers([id]) : null;
+    },
+
+    groupLayers(ids) {
       const s = get();
-      const layer = s.layers.find((l) => l.id === id);
-      if (!layer || layer.groupId !== null) return null;
+      const picked = new Set(ids);
+      const block = s.layers.filter((l) => picked.has(l.id));
+      if (block.length === 0) return null;
+      const rest = s.layers.filter((l) => !picked.has(l.id));
+      const at = slotBelow(s.layers, rest, block[block.length - 1]!.id, null);
       const n = s.groupCounter + 1;
       const group = makeGroup(`Group ${n}`);
-      set({
-        layers: s.layers.map((l) => (l.id === id ? { ...l, groupId: group.id } : l)),
-        groups: [...s.groups, group],
-        groupCounter: n,
-      });
+      const layers = [
+        ...rest.slice(0, at),
+        ...block.map((l) => ({ ...l, groupId: group.id })),
+        ...rest.slice(at),
+      ];
+      set({ ...normalizeGroups(layers, [...s.groups, group]), groupCounter: n });
       return group.id;
     },
 

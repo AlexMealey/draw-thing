@@ -69,6 +69,13 @@ export class ViewTransform {
     this.set(multiply(about(rotate(rad), x, y), this.m), x, y);
   }
 
+  /** Turns the view back to 0° about a view-space point, keeping the zoom and that point fixed. */
+  resetRotation(x: number, y: number) {
+    this.rotateAt(-this.rotation, x, y);
+    const s = this.scale;
+    this.set({ ...this.m, a: s, b: 0, c: 0, d: s }, x, y); // exactly upright, no rounding residue
+  }
+
   /**
    * Centers the document, unrotated, filling `margin` of the view area left free by `insets`
    * (UI chrome such as the top bar and sidebar).

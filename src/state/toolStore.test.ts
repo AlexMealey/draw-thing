@@ -51,3 +51,19 @@ describe('custom brushes', () => {
     expect(store().adjustments[`paint:${id}`]).toBeUndefined();
   });
 });
+
+describe('recent colors', () => {
+  beforeEach(() => toolStore.setState(toolStore.getInitialState(), true));
+
+  it('keeps the 16 latest committed colors, newest first, without repeats', () => {
+    for (let i = 0; i < 20; i++) store().setColor(`#0000${i.toString(16).padStart(2, '0')}`, true);
+    store().setColor('#000005', true);
+    store().setColor('#abcdef'); // not committed: a drag in progress
+    const recent = store().recentColors;
+    expect(recent).toHaveLength(16);
+    expect(recent[0]).toBe('#000005');
+    expect(recent[1]).toBe('#000013');
+    expect(new Set(recent).size).toBe(16);
+    expect(recent).not.toContain('#abcdef');
+  });
+});
