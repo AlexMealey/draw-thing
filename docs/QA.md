@@ -104,6 +104,12 @@ installed.
 - [ ] Two-, three- and four-finger taps and quick pinch-to-fit are reliable and never leave a
       stray mark.
 - [ ] A system gesture mid-stroke (Control Center swipe, Alt-Tab) commits the stroke cleanly.
+- [ ] A mouse wheel zooms around the pointer by one zoom step per notch, and Shift + wheel
+      scrolls sideways. A trackpad's two-finger scroll still pans and its pinch zooms (Windows
+      precision touchpads and Mac trackpads). Actions → Canvas view → Mouse wheel switches to
+      scrolling.
+- [ ] Holding Shift or Alt while dragging a slider (sidebar size and opacity, panel sliders) moves
+      it in the steps set under Actions → Input, with a keyboard cover and with a mouse.
 
 ### Rendering and performance
 

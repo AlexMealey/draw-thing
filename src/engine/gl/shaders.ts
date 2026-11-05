@@ -178,33 +178,57 @@ void main() {
 }`;
 
 /**
- * One direction of a separable Gaussian blur, on premultiplied pixels. `u_step` is the uv offset
- * between taps (wider than a pixel for big radii; bilinear sampling fills in), `u_sigma` is in taps.
+ * Draws into a region at the origin of a target and reads from a region at the origin of another:
+ * the Gaussian blur keeps its downsampled levels inside existing full-size buffers. `v_uv` is in
+ * the source texture, `v_corner` runs 0..1 over the destination region.
+ */
+export const REGION_VS = `#version 300 es
+layout(location = 0) in vec2 a_corner;
+uniform vec2 u_dstRegion; // destination region / destination texture size
+uniform vec2 u_srcRegion; // source region / source texture size
+out vec2 v_uv;
+out vec2 v_corner;
+void main() {
+  v_uv = a_corner * u_srcRegion;
+  v_corner = a_corner;
+  gl_Position = vec4(a_corner * u_dstRegion * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+/**
+ * One direction of a separable Gaussian blur on premultiplied pixels, read from a source region
+ * (taps are clamped to it, like CLAMP_TO_EDGE). `u_step` is one texel; with `u_taps` = 0 it is a
+ * plain bilinear copy, which halves a level when the destination is half the size.
  */
 export const GAUSS_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
+in vec2 v_corner;
 uniform sampler2D u_src;
+uniform vec2 u_uvMin;
+uniform vec2 u_uvMax;
 uniform vec2 u_step;
 uniform float u_sigma;
 uniform int u_taps;
 out vec4 o;
-// Alpha-locked layers keep their own alpha: blurring only moves color around inside it.
+// Alpha-locked layers keep their own alpha (the full-size original, at v_corner).
 uniform bool u_keepAlpha;
 uniform sampler2D u_alpha;
 vec4 keepAlpha(vec4 f) {
   if (!u_keepAlpha) return f;
-  float a = texture(u_alpha, v_uv).a;
+  float a = texture(u_alpha, v_corner).a;
   return vec4((f.a > 0.0 ? f.rgb / f.a : vec3(0.0)) * a, a);
 }
+vec4 tap(vec2 uv) {
+  return texture(u_src, clamp(uv, u_uvMin, u_uvMax));
+}
 void main() {
-  vec4 sum = texture(u_src, v_uv);
+  vec4 sum = tap(v_uv);
   float total = 1.0;
   for (int i = 1; i <= 64; i++) {
     if (i > u_taps) break;
     float x = float(i);
     float w = exp(-0.5 * x * x / (u_sigma * u_sigma));
-    sum += (texture(u_src, v_uv + u_step * x) + texture(u_src, v_uv - u_step * x)) * w;
+    sum += (tap(v_uv + u_step * x) + tap(v_uv - u_step * x)) * w;
     total += 2.0 * w;
   }
   o = keepAlpha(sum / total);

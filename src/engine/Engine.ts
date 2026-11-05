@@ -73,6 +73,7 @@ import { Thumbnailer } from './render/Thumbnailer';
 import { perf } from './perf';
 import { ema, engineStats } from './stats';
 import { type Insets, NO_INSETS, ViewTransform } from './view/ViewTransform';
+import { WheelClassifier } from './view/wheel';
 
 export interface EngineOptions {
   /** Multi-finger tap: 2 = undo, 3 = redo, 4 = toggle UI. */
@@ -250,6 +251,8 @@ export class Engine implements StrokeSink {
   private spaceHeld = false;
   private snapRotation = true;
   private keyZoom = KEY_ZOOM;
+  private wheelAction: 'zoom' | 'pan' = 'zoom';
+  private wheel = new WheelClassifier();
   private panPointer: { id: number; x: number; y: number } | null = null;
 
   private batch = new DabBatch();
@@ -378,10 +381,14 @@ export class Engine implements StrokeSink {
     this.requestFrame();
   }
 
-  /** `snapRotation`: twisting ends on a quarter turn when close to one. `keyZoom`: Ctrl/⌘ +/− step. */
-  setViewPrefs(prefs: { snapRotation: boolean; keyZoom: number }) {
+  /**
+   * `snapRotation`: twisting ends on a quarter turn when close to one. `keyZoom`: Ctrl/⌘ +/− step,
+   * also one mouse wheel notch. `wheel`: whether the mouse wheel zooms or pans.
+   */
+  setViewPrefs(prefs: { snapRotation: boolean; keyZoom: number; wheel: 'zoom' | 'pan' }) {
     this.snapRotation = prefs.snapRotation;
     this.keyZoom = prefs.keyZoom;
+    this.wheelAction = prefs.wheel;
   }
 
   /** Rotates the view about the middle of the area the UI leaves clear (positive = clockwise). */
@@ -1517,13 +1524,17 @@ export class Engine implements StrokeSink {
       return;
     }
     e.preventDefault();
-    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.viewH : 1;
-    const rect = this.canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    // Ctrl+wheel is also what a Chromium trackpad pinch sends.
-    if (e.ctrlKey || e.metaKey) this.view.zoomAt(Math.exp(-e.deltaY * unit * 0.01), x, y);
-    else this.view.panBy(-e.deltaX * unit, -e.deltaY * unit);
+    const intent = this.wheel.classify(
+      e,
+      { wheel: this.wheelAction, zoomStep: this.keyZoom },
+      this.viewH,
+    );
+    if (intent.kind === 'zoom') {
+      const rect = this.canvas.getBoundingClientRect();
+      this.view.zoomAt(intent.factor, e.clientX - rect.left, e.clientY - rect.top);
+    } else {
+      this.view.panBy(intent.dx, intent.dy);
+    }
     this.requestFrame();
   };
 

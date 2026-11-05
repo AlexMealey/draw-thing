@@ -8,6 +8,8 @@ import { type Background, DEFAULT_BACKGROUND } from './documentStore';
 
 export type ToolMode = 'paint' | 'erase';
 export type ColorPicker = 'square' | 'wheel';
+/** What a mouse wheel does over the canvas (Ctrl/⌘ + wheel and trackpad pinch always zoom). */
+export type WheelAction = 'zoom' | 'pan';
 
 export interface BrushAdjustments {
   size: number;
@@ -55,6 +57,10 @@ export interface ToolState {
   colorPicker: ColorPicker;
   /** Hue, saturation, brightness and contrast sliders under the picker. */
   colorSliders: boolean;
+  wheel: WheelAction;
+  /** Slider steps while Shift or Alt is held, in the slider's units (px, %, °). */
+  stepShift: number;
+  stepAlt: number;
 
   setMode(mode: ToolMode): void;
   selectPreset(id: string): void;
@@ -87,7 +93,10 @@ type Pref =
   | 'keyZoomStep'
   | 'newCanvasBackground'
   | 'colorPicker'
-  | 'colorSliders';
+  | 'colorSliders'
+  | 'wheel'
+  | 'stepShift'
+  | 'stepAlt';
 
 const MAX_RECENT = 10;
 const MODES: readonly ToolMode[] = ['paint', 'erase'];
@@ -133,12 +142,14 @@ const safeStorage: StateStorage = {
   },
 };
 
+/** Brushes can be as big as the canvas's shorter side, whatever the brush. */
+export function maxBrushSize(width: number, height: number): number {
+  return Math.max(1, Math.min(width, height));
+}
+
 export function defaultAdjustments(preset: BrushPreset, mode: ToolMode): BrushAdjustments {
   return {
-    size:
-      mode === 'erase'
-        ? Math.min(preset.size.max, Math.max(preset.size.default, 40))
-        : preset.size.default,
+    size: mode === 'erase' ? Math.max(preset.size.default, 40) : preset.size.default,
     opacity: preset.opacity,
     smoothing: preset.stabilization,
   };
@@ -165,6 +176,9 @@ export const toolStore = createStore<ToolState>()(
       newCanvasBackground: DEFAULT_BACKGROUND,
       colorPicker: 'square',
       colorSliders: true,
+      wheel: 'zoom',
+      stepShift: 5,
+      stepAlt: 10,
 
       setMode: (mode) => set({ mode }),
       selectPreset: (id) => set({ presetIds: { ...get().presetIds, [get().mode]: id } }),
@@ -275,6 +289,9 @@ export const toolStore = createStore<ToolState>()(
         newCanvasBackground: s.newCanvasBackground,
         colorPicker: s.colorPicker,
         colorSliders: s.colorSliders,
+        wheel: s.wheel,
+        stepShift: s.stepShift,
+        stepAlt: s.stepAlt,
       }),
     },
   ),

@@ -12,6 +12,9 @@ export interface LabEngine {
   exportImage(opaque: boolean): ImageData;
   whenIdle(): Promise<void>;
   takeChanges(): unknown;
+  beginAdjustment(kind: string): boolean;
+  setAdjustment(patch: Record<string, number>): void;
+  applyAdjustment(): void;
 }
 
 export interface LabHook {

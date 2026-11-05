@@ -11,6 +11,7 @@ import {
 } from '../color';
 import { percent } from '../ui/format';
 import { Panel } from '../ui/Panel';
+import { useSteppedRange } from '../ui/sliderStep';
 import ui from '../ui/ui.module.css';
 import styles from './ColorPanel.module.css';
 
@@ -258,6 +259,7 @@ interface SliderProps {
 }
 
 function ColorSlider({ label, value, min, max, step = 0.01, format, onChange }: SliderProps) {
+  const stepped = useSteppedRange({ value, min, max, onChange: (v) => onChange(v, true) });
   const commit = (e: { currentTarget: HTMLInputElement }) =>
     onChange(Number(e.currentTarget.value), true);
   return (
@@ -269,7 +271,10 @@ function ColorSlider({ label, value, min, max, step = 0.01, format, onChange }: 
         max={max}
         step={step}
         value={value}
-        onChange={(e) => onChange(Number(e.target.value), false)}
+        onPointerDown={stepped.onPointerDown}
+        onPointerMove={stepped.onPointerMove}
+        onKeyDown={stepped.onKeyDown}
+        onChange={(e) => onChange(stepped.snap(Number(e.target.value)), false)}
         onPointerUp={commit}
         onKeyUp={commit}
       />

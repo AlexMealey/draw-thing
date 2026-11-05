@@ -12,6 +12,7 @@ import { BackgroundPicker } from '../ui/BackgroundPicker';
 import { fileSize, percent } from '../ui/format';
 import { Panel } from '../ui/Panel';
 import { SliderRow } from '../ui/SliderRow';
+import { STEP_CHOICES } from '../ui/sliderStep';
 import ui from '../ui/ui.module.css';
 
 interface Props {
@@ -41,6 +42,8 @@ const GESTURES: [string, string][] = [
   ['B / E / L / C', 'Brush, eraser, layers, color'],
   ['[ and ]', 'Smaller / bigger brush'],
   ['Ctrl/⌘ + and −', 'Zoom in / out'],
+  ['Mouse wheel', 'Zoom (Shift + wheel moves sideways)'],
+  ['Shift / Alt + slider', 'Move a slider in bigger steps (set under Input)'],
   ['← and →', 'Rotate the canvas; hold to keep turning (turn on under Canvas view)'],
 ];
 
@@ -69,6 +72,9 @@ export function ActionsPanel({
   const newCanvasBackground = useTools((s) => s.newCanvasBackground);
   const colorPicker = useTools((s) => s.colorPicker);
   const colorSliders = useTools((s) => s.colorSliders);
+  const wheel = useTools((s) => s.wheel);
+  const stepShift = useTools((s) => s.stepShift);
+  const stepAlt = useTools((s) => s.stepAlt);
   const { setPrefs } = toolStore.getState();
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -204,6 +210,22 @@ export function ActionsPanel({
           onChange={(v) => setPrefs({ arrowRotateStep: Math.max(1, v) })}
         />
       )}
+      <div className={ui.switch} role="radiogroup" aria-label="Mouse wheel">
+        Mouse wheel
+        <span style={{ display: 'flex', gap: 6 }}>
+          {(['zoom', 'pan'] as const).map((w) => (
+            <button
+              key={w}
+              role="radio"
+              aria-checked={wheel === w}
+              className={`${ui.textButton} ${wheel === w ? ui.primary : ''}`}
+              onClick={() => setPrefs({ wheel: w })}
+            >
+              {w === 'zoom' ? 'Zooms' : 'Scrolls'}
+            </button>
+          ))}
+        </span>
+      </div>
       <label className={ui.switch}>
         Snap rotation to quarter turns
         <input
@@ -229,6 +251,17 @@ export function ActionsPanel({
         format={percent}
         onChange={(v) => setPrefs({ sizeStep: v })}
       />
+
+      <h3 className={ui.section}>Input</h3>
+      <p style={{ margin: '0 0 4px', fontSize: 13, color: 'var(--color-text-muted)' }}>
+        Hold Shift or Alt while dragging a slider to move it in steps (px, % or degrees).
+      </p>
+      <StepChoice
+        label="Shift step"
+        value={stepShift}
+        onChange={(v) => setPrefs({ stepShift: v })}
+      />
+      <StepChoice label="Alt step" value={stepAlt} onChange={(v) => setPrefs({ stepAlt: v })} />
 
       <h3 className={ui.section}>New canvas background</h3>
       <BackgroundPicker
@@ -274,6 +307,26 @@ export function ActionsPanel({
         ))}
       </dl>
     </Panel>
+  );
+}
+
+function StepChoice(p: { label: string; value: number; onChange: (value: number) => void }) {
+  return (
+    <label className={ui.switch}>
+      {p.label}
+      <select
+        className={ui.select}
+        style={{ width: 'auto', minWidth: 88 }}
+        value={p.value}
+        onChange={(e) => p.onChange(Number(e.target.value))}
+      >
+        {STEP_CHOICES.map((n) => (
+          <option key={n} value={n}>
+            {n}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Engine } from '../../engine/Engine';
+import { documentStore } from '../../state/documentStore';
 import {
   currentAdjustments,
-  currentPreset,
+  maxBrushSize,
   toolSettings,
   toolStore,
   useTools,
@@ -80,6 +81,7 @@ export function EditorScreen({
   const fingerDrawing = useTools((s) => s.fingerDrawing);
   const snapRotation = useTools((s) => s.snapRotation);
   const keyZoom = useTools((s) => s.keyZoomStep);
+  const wheel = useTools((s) => s.wheel);
   const tool = useMemo(
     () => toolSettings({ ...toolStore.getState(), mode, color, presetIds, adjustments, overrides }),
     [mode, color, presetIds, adjustments, overrides],
@@ -114,8 +116,8 @@ export function EditorScreen({
   }, [engine, fingerDrawing]);
 
   useEffect(() => {
-    engine()?.setViewPrefs({ snapRotation, keyZoom });
-  }, [engine, snapRotation, keyZoom]);
+    engine()?.setViewPrefs({ snapRotation, keyZoom, wheel });
+  }, [engine, snapRotation, keyZoom, wheel]);
 
   useEffect(() => {
     engine()?.setEyedropper(eyedropper);
@@ -131,7 +133,8 @@ export function EditorScreen({
       if (e.ctrlKey || e.metaKey || e.altKey || isTyping(e.target)) return;
       const tools = toolStore.getState();
       const size = currentAdjustments(tools).size;
-      const max = currentPreset(tools).size.max;
+      const { width, height } = documentStore.getState();
+      const max = maxBrushSize(width, height);
       const step = 1 + tools.sizeStep;
       switch (e.key) {
         case 'b':
