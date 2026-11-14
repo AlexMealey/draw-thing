@@ -5,6 +5,10 @@ export interface EngineHook {
   readonly docW: number;
   readonly docH: number;
   debugHash(): string;
+  debugFrameHash(frameId: string): string;
+  frameIds(): string[];
+  selectFrame(id: string): boolean;
+  readonly playing: boolean;
   undo(): void;
   redo(): void;
   whenIdle(): Promise<void>;
@@ -24,6 +28,13 @@ declare global {
 
 /** Hash of the composited document. */
 export const hash = (page: Page) => page.evaluate(() => window.__drawthing!.debugHash());
+
+/** The animation's frame ids, in order. */
+export const frameIds = (page: Page) => page.evaluate(() => window.__drawthing!.frameIds());
+
+/** Hash of one frame, flattened on its background. */
+export const frameHash = (page: Page, id: string) =>
+  page.evaluate((frame) => window.__drawthing!.debugFrameHash(frame), id);
 
 /**
  * Releases the mouse and waits until the page has handled the pointerup. Playwright's input and

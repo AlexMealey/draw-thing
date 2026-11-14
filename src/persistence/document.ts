@@ -1,7 +1,11 @@
 import {
+  type AnimationSettings,
   BLEND_MODES,
   type Background,
+  clampFps,
+  clampHold,
   type DocumentState,
+  frameStack,
   type LayerGroup,
   type LayerMeta,
   normalizeGroups,
@@ -19,29 +23,59 @@ export interface SavedDocument {
   height: number;
   tileSize: typeof TILE;
   background: Background;
-  /** Index 0 is the bottom of the stack. */
-  layers: LayerMeta[];
+  /**
+   * Every frame's layers, frame by frame in frame order; index 0 is the bottom of the first
+   * frame's stack. Each frame's layers are adjacent. (Older apps read this as one stack.)
+   */
+  layers: SavedLayer[];
   /** Absent in documents saved before groups existed. */
   groups?: LayerGroup[];
+  /** The active frame's active layer. */
   activeLayerId: string;
   layerCounter: number;
   groupCounter?: number;
+  /** Absent in documents saved before animation existed: they are one frame. */
+  frames?: SavedFrame[];
+  activeFrameId?: string;
+  animation?: AnimationSettings;
+}
+
+/** A layer with the frame it belongs to (absent: the first frame). */
+export type SavedLayer = LayerMeta & { frameId?: string };
+
+export interface SavedFrame {
+  id: string;
+  hold: number;
+  activeLayerId: string;
 }
 
 export const DEFAULT_NAME = 'Untitled Artwork';
 
 export function toSaved(doc: DocumentState): SavedDocument {
+  const layers: SavedLayer[] = [];
+  const groups: LayerGroup[] = [];
+  const frames: SavedFrame[] = [];
+  for (const f of doc.frames) {
+    const stack = frameStack(doc, f.id);
+    if (!stack) continue;
+    for (const l of stack.layers) layers.push({ ...l, frameId: f.id });
+    for (const g of stack.groups) groups.push({ ...g });
+    frames.push({ id: f.id, hold: f.hold, activeLayerId: stack.activeLayerId });
+  }
   return {
     schema: 1,
     width: doc.width,
     height: doc.height,
     tileSize: TILE,
     background: { ...doc.background },
-    layers: doc.layers.map((l) => ({ ...l })),
-    groups: doc.groups.map((g) => ({ ...g })),
+    layers,
+    groups,
     activeLayerId: doc.activeLayerId,
     layerCounter: doc.layerCounter,
     groupCounter: doc.groupCounter,
+    frames,
+    activeFrameId: doc.activeFrameId,
+    animation: { ...doc.animation },
   };
 }
 
@@ -97,7 +131,22 @@ export function parseSavedDocument(value: unknown): SavedDocument {
       };
     },
   );
-  const rawLayers = v.layers.map((raw: unknown): LayerMeta => {
+  const frameIds = new Set<string>();
+  const rawFrames: SavedFrame[] = (Array.isArray(v.frames) ? v.frames : []).map(
+    (raw: unknown): SavedFrame => {
+      const f = (raw ?? {}) as Record<string, unknown>;
+      if (typeof f.id !== 'string' || !SAFE_ID.test(f.id) || frameIds.has(f.id)) {
+        fail('bad frame id');
+      }
+      frameIds.add(f.id as string);
+      return {
+        id: f.id as string,
+        hold: clampHold(typeof f.hold === 'number' ? f.hold : 1),
+        activeLayerId: typeof f.activeLayerId === 'string' ? f.activeLayerId : '',
+      };
+    },
+  );
+  const rawLayers = v.layers.map((raw: unknown): SavedLayer => {
     const l = (raw ?? {}) as Record<string, unknown>;
     if (typeof l.id !== 'string' || !SAFE_ID.test(l.id) || ids.has(l.id) || groupIds.has(l.id)) {
       fail('bad layer id');
@@ -114,9 +163,42 @@ export function parseSavedDocument(value: unknown): SavedDocument {
       locked: l.locked === true,
       alphaLocked: l.alphaLocked === true,
       groupId: typeof l.groupId === 'string' ? l.groupId : null,
+      ...(typeof l.frameId === 'string' && frameIds.has(l.frameId) ? { frameId: l.frameId } : {}),
     };
   });
-  const { layers, groups } = normalizeGroups(rawLayers, rawGroups);
+  // Frames in order, each frame's layers together (untagged layers belong to the first frame);
+  // frames without layers go.
+  const firstFrame = rawFrames[0]?.id;
+  const frameOf = (l: SavedLayer) => l.frameId ?? firstFrame;
+  const order = rawFrames.map((f) => f.id);
+  const sorted =
+    rawFrames.length > 0
+      ? order.flatMap((id) => rawLayers.filter((l) => frameOf(l) === id))
+      : rawLayers;
+  const { layers, groups } = normalizeGroups(sorted, rawGroups);
+  const tagged = rawFrames.length > 0 ? layers.map((l) => ({ ...l, frameId: frameOf(l) })) : layers;
+  const frames = rawFrames
+    .filter((f) => tagged.some((l) => l.frameId === f.id))
+    .map((f) => {
+      const own = tagged.filter((l) => l.frameId === f.id);
+      const activeLayerId = own.some((l) => l.id === f.activeLayerId)
+        ? f.activeLayerId
+        : own[own.length - 1]!.id;
+      return { ...f, activeLayerId };
+    });
+  const activeFrameId =
+    typeof v.activeFrameId === 'string' && frames.some((f) => f.id === v.activeFrameId)
+      ? v.activeFrameId
+      : frames[0]?.id;
+  const anim = v.animation as Record<string, unknown> | undefined;
+  const animation: AnimationSettings | undefined =
+    anim && typeof anim === 'object'
+      ? {
+          enabled: anim.enabled === true,
+          fps: clampFps(typeof anim.fps === 'number' ? anim.fps : NaN),
+        }
+      : undefined;
+  const activeFrame = frames.find((f) => f.id === activeFrameId);
   const active = typeof v.activeLayerId === 'string' && ids.has(v.activeLayerId);
   return {
     schema: 1,
@@ -124,9 +206,15 @@ export function parseSavedDocument(value: unknown): SavedDocument {
     height: v.height as number,
     tileSize: TILE,
     background: { color: bg.color, visible: bg.visible !== false },
-    layers,
+    layers: tagged,
     groups,
-    activeLayerId: active ? (v.activeLayerId as string) : layers[layers.length - 1]!.id,
+    activeLayerId: activeFrame
+      ? tagged.some((l) => l.id === v.activeLayerId && l.frameId === activeFrame.id)
+        ? (v.activeLayerId as string)
+        : activeFrame.activeLayerId
+      : active
+        ? (v.activeLayerId as string)
+        : layers[layers.length - 1]!.id,
     layerCounter:
       typeof v.layerCounter === 'number' && v.layerCounter >= layers.length
         ? Math.floor(v.layerCounter)
@@ -135,5 +223,7 @@ export function parseSavedDocument(value: unknown): SavedDocument {
       typeof v.groupCounter === 'number' && v.groupCounter >= groups.length
         ? Math.floor(v.groupCounter)
         : groups.length,
+    ...(frames.length > 0 ? { frames, activeFrameId } : {}),
+    ...(animation ? { animation } : {}),
   };
 }

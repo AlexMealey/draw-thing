@@ -132,17 +132,46 @@ void main() {
   o = vec4(co, s.a + d.a * (1.0 - s.a));
 }`;
 
-/** The composited document → screen. Transparent areas (background hidden) show a checkerboard. */
+/**
+ * The composited document → screen. Under it: the background color when `u_hasBg` (the image was
+ * composited without it), else a checkerboard where it's transparent; then, when `u_hasUnder`, an
+ * underlay (onion skin) between the two.
+ */
 export const PRESENT_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_image;
+uniform sampler2D u_under;
+uniform bool u_hasUnder;
+uniform bool u_hasBg;
+uniform vec3 u_bg;
 out vec4 o;
 void main() {
   vec4 c = texture(u_image, v_uv);
   float k = mod(floor(gl_FragCoord.x / 12.0) + floor(gl_FragCoord.y / 12.0), 2.0);
-  vec3 checker = mix(vec3(1.0), vec3(0.82), k);
-  o = vec4(c.rgb + checker * (1.0 - c.a), 1.0);
+  vec3 base = u_hasBg ? u_bg : mix(vec3(1.0), vec3(0.82), k);
+  if (u_hasUnder) {
+    vec4 u = texture(u_under, v_uv);
+    base = u.rgb + base * (1.0 - u.a);
+  }
+  o = vec4(c.rgb + base * (1.0 - c.a), 1.0);
+}`;
+
+/**
+ * Onion skin: a neighbouring frame (premultiplied), faded and tinted towards a color while
+ * keeping its alpha.
+ */
+export const ONION_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+uniform float u_opacity;
+uniform vec3 u_tint;
+uniform float u_tintAmount;
+out vec4 o;
+void main() {
+  vec4 c = texture(u_src, v_uv);
+  o = vec4(mix(c.rgb, u_tint * c.a, u_tintAmount), c.a) * u_opacity;
 }`;
 
 /**

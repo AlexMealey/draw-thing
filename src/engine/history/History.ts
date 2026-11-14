@@ -1,4 +1,11 @@
-import type { Background, LayerGroup, LayerMeta } from '../../state/documentStore';
+import type {
+  AnimationSettings,
+  Background,
+  FrameMeta,
+  FrameStack,
+  LayerGroup,
+  LayerMeta,
+} from '../../state/documentStore';
 
 /** Premultiplied RGBA8 tile bytes, the same deflated, or null for a fully transparent tile. */
 export type TileData = Uint8Array | Blob | null;
@@ -16,6 +23,10 @@ export interface DocSnapshot {
   groups: readonly LayerGroup[];
   activeLayerId: string;
   background: Background;
+  frames: readonly FrameMeta[];
+  activeFrameId: string;
+  parked: Readonly<Record<string, FrameStack>>;
+  animation: AnimationSettings;
 }
 
 /**
@@ -27,6 +38,8 @@ export interface HistoryEntry {
   label: string;
   doc?: { before: DocSnapshot; after: DocSnapshot };
   pixels: Map<string, LayerTiles>;
+  /** The frame that was active when the step was made: undo/redo goes back to it. */
+  frameId?: string;
   /** Present while the tiles are still being read back from the GPU; call to finish now. */
   pending?: () => void;
   /** Consecutive entries with the same key (e.g. one slider drag) merge into one. */

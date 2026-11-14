@@ -4,7 +4,8 @@
   right: calc(var(--safe-right) + var(--space-2));
   width: min(var(--panel-w, 340px), calc(100vw - 2 * var(--space-2)));
   max-height: calc(
-    100dvh - var(--safe-top) - var(--topbar-h) - var(--safe-bottom) - 3 * var(--space-2)
+    100dvh - var(--safe-top) - var(--topbar-h) - var(--safe-bottom) - 3 * var(--space-2) -
+      var(--timeline-h, 0px)
   );
   display: flex;
   flex-direction: column;
@@ -64,11 +65,12 @@
     top: auto;
     left: 0;
     right: 0;
-    bottom: 0;
+    /* Above the animation timeline when it's shown (which already covers the safe area). */
+    bottom: var(--timeline-space, 0px);
     width: auto;
-    max-height: 62dvh;
+    max-height: calc(62dvh - var(--timeline-h, 0px) / 2);
     border-radius: var(--radius) var(--radius) 0 0;
-    padding-bottom: var(--safe-bottom);
+    padding-bottom: var(--sheet-safe, var(--safe-bottom));
     animation: rise 160ms ease-out;
     touch-action: pan-y;
   }

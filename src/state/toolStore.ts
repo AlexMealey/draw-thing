@@ -3,6 +3,7 @@ import { createJSONStorage, persist, type StateStorage } from 'zustand/middlewar
 import { createStore } from 'zustand/vanilla';
 import { type BrushOverride, resolvePreset } from '../engine/brush/overrides';
 import { type BrushPreset, DEFAULT_PRESET_ID, PRESETS, presetById } from '../engine/brush/presets';
+import { DEFAULT_ONION, type OnionSettings } from '../engine/frames/onion';
 import type { ToolSettings } from '../engine/brush/tool';
 import { type Background, DEFAULT_BACKGROUND } from './documentStore';
 
@@ -68,6 +69,8 @@ export interface ToolState {
   cursorOutlineSize: CursorOutlineSize;
   /** Diameter of the fixed-size outline, screen CSS px. */
   cursorOutlineFixed: number;
+  /** Onion skin while drawing an animation. */
+  onion: OnionSettings;
 
   setMode(mode: ToolMode): void;
   selectPreset(id: string): void;
@@ -106,7 +109,8 @@ type Pref =
   | 'stepAlt'
   | 'cursorOutline'
   | 'cursorOutlineSize'
-  | 'cursorOutlineFixed';
+  | 'cursorOutlineFixed'
+  | 'onion';
 
 const MAX_RECENT = 10;
 const MODES: readonly ToolMode[] = ['paint', 'erase'];
@@ -192,6 +196,7 @@ export const toolStore = createStore<ToolState>()(
       cursorOutline: false,
       cursorOutlineSize: 'brush',
       cursorOutlineFixed: 24,
+      onion: { ...DEFAULT_ONION },
 
       setMode: (mode) => set({ mode }),
       selectPreset: (id) => set({ presetIds: { ...get().presetIds, [get().mode]: id } }),
@@ -308,6 +313,7 @@ export const toolStore = createStore<ToolState>()(
         cursorOutline: s.cursorOutline,
         cursorOutlineSize: s.cursorOutlineSize,
         cursorOutlineFixed: s.cursorOutlineFixed,
+        onion: s.onion,
       }),
     },
   ),

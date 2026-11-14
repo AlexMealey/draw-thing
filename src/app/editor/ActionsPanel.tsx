@@ -45,6 +45,8 @@ const GESTURES: [string, string][] = [
   ['Mouse wheel', 'Zoom (Shift + wheel moves sideways)'],
   ['Shift / Alt + slider', 'Move a slider in bigger steps (set under Input)'],
   ['← and →', 'Rotate the canvas; hold to keep turning (turn on under Canvas view)'],
+  [', and .', 'Previous / next frame (animation)'],
+  ['/', 'Play or stop the animation'],
 ];
 
 export function ActionsPanel({
@@ -61,6 +63,8 @@ export function ActionsPanel({
   const width = useDocument((s) => s.width);
   const height = useDocument((s) => s.height);
   const layers = useDocument((s) => s.layers.length);
+  const frames = useDocument((s) => s.frames.length);
+  const animation = useDocument((s) => s.animation.enabled);
   const maxLayers = useDocument((s) => s.maxLayers);
   const sidebarRight = useTools((s) => s.sidebarRight);
   const fingerDrawing = useTools((s) => s.fingerDrawing);
@@ -115,7 +119,16 @@ export function ActionsPanel({
         <strong>{project.name}</strong>
         <br />
         {width} × {height} px · {layers} of {maxLayers} layers
+        {frames > 1 && ` per frame · ${frames} frames`}
       </p>
+      <label className={ui.switch}>
+        Animation (frames and timeline)
+        <input
+          type="checkbox"
+          checked={animation}
+          onChange={(e) => documentStore.getState().setAnimation({ enabled: e.target.checked })}
+        />
+      </label>
       <p style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button className={ui.textButton} onClick={onNewCanvas}>
           New canvas…

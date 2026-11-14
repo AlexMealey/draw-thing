@@ -13,10 +13,11 @@ correctness, not tablet speed.
 | `e2e/replay.spec.ts`    | **Stroke-replay visual regression.** Synthetic scenes covering every brush feature (pressure, tilt, grain, flow, max accumulation, jitter, both erasers, StreamLine, cancelled strokes, all 9 blend modes), plus every recording in `e2e/recordings/`. Each is compared with its reference image in `e2e/snapshots/` (Playwright's comparator, pixelmatch). |
 | `e2e/input.spec.ts`     | Real pen and touch input through Chromium's input pipeline (CDP): pressure sets the width, no 0-pressure first dot, tilt widens the pencil, a resting palm leaves no mark and moves nothing, fingers paint only until a pen is used, a second finger turns a stroke into a pinch without a mark, and a recorded session replays pixel-identically. |
 | `e2e/perf.spec.ts`      | The benchmark suite (quick settings). Every benchmark must run; GL objects must not leak, the context must survive, GPU and history memory must stay within budget. Timings are reported (`test-results/…/benchmarks.json`), and only enforced with `BENCH_STRICT=1`. |
+| `e2e/animation.spec.ts` | Stop-frame animation: clone keeps the drawing and a new frame is blank, each frame keeps its pixels when switching, undo reaches into other frames, deleted frames come back, frames/holds/frame rate survive a reload, onion skin shows on screen but never in the artwork, playback starts and stops, and GIF (size, frame count, per-frame delays, loop) and MP4 (H.264, duration) exports are checked byte by byte. |
 | `e2e/history.spec.ts` … | Earlier phases: undo/redo exactness, saving and crash recovery, export/import, PWA, GPU reset.                                                                                                                                                         |
 
 Plus `./scripts/dnpm run size`: the JavaScript needed at startup must stay under 250 KB gzipped
-(currently about 120 KB).
+(currently about 142 KB). The GIF and MP4 encoders load only when exporting.
 
 After an intended rendering change, look at the diffs in `playwright-report/`, then refresh the
 reference images and commit them:
@@ -141,6 +142,27 @@ installed.
       prompt on installed clients.
 - [ ] PNG, JPEG and PSD exports open in Photos, Files, Explorer, Photoshop and Krita;
       `.drawthing` re-imports losslessly.
+
+### Animation
+
+- [ ] Actions → Canvas → Animation shows the timeline; panels (bottom sheets on phones), the
+      sidebar and the update prompt all stay clear of it, and hiding the UI (four-finger tap) hides
+      it too.
+- [ ] Clone frame copies every layer and group; New frame starts with one blank layer. Flipping
+      frames (tap, `,` and `.`) is instant for neighbours and well under a second for far frames
+      of a 2732 × 2048 artwork with 3 layers per frame.
+- [ ] Onion skin: previous frames tinted red, next frames green, under the drawing and over the
+      background; the eyedropper, PNG export and gallery thumbnail never include it.
+- [ ] Playback at 12 fps "on twos" (hold 2) looks right against a stopwatch over 10 s; tapping the
+      canvas stops it.
+- [ ] Drag a frame to reorder it (mouse/pen: drag; touch: hold, then drag) without the strip
+      scrolling; the frame menu's Move earlier/later does the same.
+- [ ] Undo after switching frames goes back to the frame that changed.
+- [ ] A 60-frame animation reopens with every frame, and the timeline thumbnails fill in.
+- [ ] Exported GIFs (looping and play-once, transparent background) and MP4s play at the right
+      length in Photos, Files, QuickTime, Windows Media Player, a browser, and a chat app.
+- [ ] MP4 export works on iPad Safari (WebCodecs H.264); where the browser can't encode video,
+      the MP4 option is disabled with the reason.
 
 ## Results log
 

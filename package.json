@@ -25,7 +25,9 @@
   "dependencies": {
     "ag-psd": "^31.0.3",
     "fflate": "^0.8.3",
+    "gifenc": "^1.0.3",
     "idb": "^8.0.4",
+    "mediabunny": "^1.66.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "zustand": "^5.0.15"

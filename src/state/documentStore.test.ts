@@ -1,5 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { activeIndex, documentStore, effectiveLayer, layerRows } from './documentStore';
+import {
+  activeIndex,
+  allLayers,
+  documentStore,
+  effectiveLayer,
+  frameStack,
+  layerRows,
+  makeFrame,
+  makeLayer,
+} from './documentStore';
 
 const store = () => documentStore.getState();
 const names = () => store().layers.map((l) => l.name);
@@ -143,5 +152,121 @@ describe('layer groups', () => {
     const only = store().groupLayer(store().layers[0]!.id)!;
     expect(store().removeGroup(only)).toBe(false);
     expect(store().layers).toHaveLength(1);
+  });
+});
+
+describe('documentStore frames', () => {
+  beforeEach(() => store().reset({ width: 100, height: 100, maxLayers: 3 }));
+
+  const insertBlank = (name: string) => {
+    const layer = { ...makeLayer(name) };
+    const frame = makeFrame();
+    const index = store().frames.findIndex((f) => f.id === store().activeFrameId) + 1;
+    store().insertFrame(frame, { layers: [layer], groups: [], activeLayerId: layer.id }, index);
+    return { frame, layer };
+  };
+
+  it('starts with one frame, animation off at 12 fps', () => {
+    expect(store().frames).toHaveLength(1);
+    expect(store().activeFrameId).toBe(store().frames[0]!.id);
+    expect(store().parked).toEqual({});
+    expect(store().animation).toEqual({ enabled: false, fps: 12 });
+  });
+
+  it('switches stacks when another frame is selected', () => {
+    const first = store().activeFrameId;
+    const original = store().layers;
+    const { frame, layer } = insertBlank('Ink');
+    expect(store().activeFrameId).toBe(frame.id);
+    expect(names()).toEqual(['Ink']);
+    expect(store().parked[first]!.layers).toBe(original);
+    expect(allLayers(store()).map((l) => l.name)).toEqual(['Layer 1', 'Ink']);
+
+    store().addLayer(); // layer limits and actions work on the active frame
+    expect(store().layers).toHaveLength(2);
+    expect(store().selectFrame(first)).toBe(true);
+    expect(names()).toEqual(['Layer 1']);
+    expect(frameStack(store(), frame.id)!.layers[0]!.id).toBe(layer.id);
+    expect(frameStack(store(), frame.id)!.layers).toHaveLength(2);
+    expect(store().selectFrame(first)).toBe(false);
+    expect(store().selectFrame('nope')).toBe(false);
+  });
+
+  it('removes frames, never the last, and selects the neighbour of a removed active one', () => {
+    const first = store().activeFrameId;
+    const { frame: second } = insertBlank('B');
+    const { frame: third } = insertBlank('C');
+    store().selectFrame(second.id);
+    expect(store().removeFrame(second.id)).toBe(true);
+    expect(store().activeFrameId).toBe(third.id);
+    expect(names()).toEqual(['C']);
+    expect(store().removeFrame(first)).toBe(true); // a parked one
+    expect(store().frames.map((f) => f.id)).toEqual([third.id]);
+    expect(store().parked).toEqual({});
+    expect(store().removeFrame(third.id)).toBe(false);
+  });
+
+  it('moves frames and clamps holds and frame rates', () => {
+    const first = store().activeFrameId;
+    const { frame: second } = insertBlank('B');
+    store().moveFrame(second.id, 0);
+    expect(store().frames.map((f) => f.id)).toEqual([second.id, first]);
+    store().setFrameHold(first, 3);
+    store().setFrameHold(second.id, 0);
+    store().setFrameHold(second.id, 1000);
+    expect(store().frames.map((f) => f.hold)).toEqual([99, 3]);
+    store().setAnimation({ fps: 500, enabled: true });
+    expect(store().animation).toEqual({ enabled: true, fps: 60 });
+  });
+
+  it('loads tagged layers into their frames', () => {
+    const l = (id: string, frameId?: string) => ({
+      ...makeLayer(id),
+      id,
+      ...(frameId ? { frameId } : {}),
+    });
+    store().load({
+      width: 10,
+      height: 10,
+      maxLayers: 4,
+      background: { color: '#ffffff', visible: true },
+      layers: [l('a1', 'fa'), l('a2', 'fa'), l('b1', 'fb'), l('x')],
+      groups: [],
+      activeLayerId: 'b1',
+      layerCounter: 4,
+      frames: [
+        { id: 'fa', hold: 2, activeLayerId: 'a1' },
+        { id: 'fb', hold: 1 },
+        { id: 'empty', hold: 1 },
+      ],
+      activeFrameId: 'fb',
+      animation: { enabled: true, fps: 8 },
+    });
+    expect(store().frames).toEqual([
+      { id: 'fa', hold: 2 },
+      { id: 'fb', hold: 1 },
+    ]);
+    expect(store().activeFrameId).toBe('fb');
+    expect(names()).toEqual(['b1']);
+    expect(store().activeLayerId).toBe('b1');
+    // Untagged layers belong to the first frame.
+    expect(store().parked.fa!.layers.map((x) => x.id)).toEqual(['a1', 'a2', 'x']);
+    expect(store().parked.fa!.activeLayerId).toBe('a1');
+    expect(store().animation).toEqual({ enabled: true, fps: 8 });
+  });
+
+  it('loads documents from before frames as one frame', () => {
+    store().load({
+      width: 10,
+      height: 10,
+      maxLayers: 4,
+      background: { color: '#ffffff', visible: true },
+      layers: [{ ...makeLayer('Old'), id: 'old' }],
+      activeLayerId: 'old',
+      layerCounter: 1,
+    });
+    expect(store().frames).toHaveLength(1);
+    expect(names()).toEqual(['Old']);
+    expect(store().animation.enabled).toBe(false);
   });
 });

@@ -8,6 +8,7 @@ import {
   type LayerGroup,
   type LayerMeta,
   layerRows,
+  frameIndex,
   useDocument,
 } from '../../state/documentStore';
 import { useThumbnail } from '../../state/thumbnailStore';
@@ -67,6 +68,8 @@ export function LayersPanel({ engine, onClose, onNotice, onAdjust }: Props) {
   const groups = useDocument((s) => s.groups);
   const activeId = useDocument((s) => s.activeLayerId);
   const maxLayers = useDocument((s) => s.maxLayers);
+  const animation = useDocument((s) => s.animation.enabled);
+  const frame = useDocument(frameIndex);
   const background = useDocument((s) => s.background);
   const doc = documentStore.getState();
   const index = activeIndex({ layers, activeLayerId: activeId });
@@ -144,7 +147,11 @@ export function LayersPanel({ engine, onClose, onNotice, onAdjust }: Props) {
 
   return (
     <Panel
-      title={`Layers ${layers.length}/${maxLayers}`}
+      title={
+        animation
+          ? `Frame ${frame + 1} · Layers ${layers.length}/${maxLayers}`
+          : `Layers ${layers.length}/${maxLayers}`
+      }
       onClose={onClose}
       actions={
         <button className={ui.iconButton} aria-label="Add layer" onClick={add}>
