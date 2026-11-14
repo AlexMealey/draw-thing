@@ -126,6 +126,8 @@ installed.
       Every layer and undo step must come back. *CI.*
 - [ ] Rotation, Split View, Stage Manager and Windows snap resizing keep the view and document
       intact.
+- [ ] Twisting the canvas shows the angle pill; tapping it turns the canvas back to 0° about the
+      middle of the screen without changing the zoom. *CI.*
 - [ ] 30-minute soak in the lab: GL objects flat, history within budget, no reload.
 
 ### PWA and persistence
@@ -142,6 +144,9 @@ installed.
       prompt on installed clients.
 - [ ] PNG, JPEG and PSD exports open in Photos, Files, Explorer, Photoshop and Krita;
       `.drawthing` re-imports losslessly.
+- [ ] Palettes: an exported `.swatches` imports into Procreate and a Procreate export imports
+      here; a `.gpl` from Lospec or Krita imports; on iPad, Import… can pick both file types from
+      Files. *CI: `.gpl` round trip.*
 
 ### Animation
 

@@ -11,6 +11,7 @@ export interface EngineHook {
   readonly playing: boolean;
   undo(): void;
   redo(): void;
+  rotateView(degrees: number): void;
   whenIdle(): Promise<void>;
 }
 

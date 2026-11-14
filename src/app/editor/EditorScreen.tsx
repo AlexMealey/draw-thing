@@ -20,6 +20,8 @@ import { BrushSettings } from './BrushSettings';
 import { ColorPanel } from './ColorPanel';
 import styles from './EditorScreen.module.css';
 import { LayersPanel } from './LayersPanel';
+import { PaletteManager } from './PaletteManager';
+import { RotationPill } from './RotationPill';
 import { SideBar } from './SideBar';
 import { Timeline, TIMELINE_H } from './Timeline';
 import { TopBar } from './TopBar';
@@ -81,6 +83,7 @@ export function EditorScreen({
   const [eyedropper, setEyedropper] = useState(false);
   const [loupe, setLoupe] = useState<Loupe | null>(null);
   const [uiHidden, setUiHidden] = useState(false);
+  const [palettesOpen, setPalettesOpen] = useState(false);
 
   const mode = useTools((s) => s.mode);
   const color = useTools((s) => s.color);
@@ -205,6 +208,7 @@ export function EditorScreen({
         case 'Escape':
           setOpen(null);
           setEyedropper(false);
+          setPalettesOpen(false);
           break;
         default:
           return;
@@ -296,6 +300,7 @@ export function EditorScreen({
             onUndo={() => engine()?.undo()}
             onRedo={() => engine()?.redo()}
           />
+          <RotationPill side={side} onReset={() => engine()?.resetRotation()} />
           {open === 'brushes' && (
             <BrushLibrary
               engine={engine}
@@ -324,7 +329,12 @@ export function EditorScreen({
               onAdjust={() => setOpen('adjustments')}
             />
           )}
-          {open === 'color' && <ColorPanel onClose={close} />}
+          {open === 'color' && (
+            <ColorPanel onClose={close} onPalettes={() => setPalettesOpen(true)} />
+          )}
+          {palettesOpen && (
+            <PaletteManager onClose={() => setPalettesOpen(false)} onNotice={onNotice} />
+          )}
           {open === 'adjustments' && <AdjustmentsPanel engine={engine} onClose={close} />}
           {open === 'actions' && (
             <ActionsPanel

@@ -4,6 +4,7 @@ import {
   allLayers,
   documentStore,
   effectiveLayer,
+  flattenPlan,
   frameStack,
   layerRows,
   makeFrame,
@@ -145,6 +146,49 @@ describe('layer groups', () => {
     expect(store().removeGroup(g)).toBe(true);
     expect(names()).toEqual(['Layer 1', 'Layer 3', 'Layer 4', 'Layer 5']);
     expect(store().layers[activeIndex(store())]!.name).toBe('Layer 1');
+  });
+
+  it('groups selected layers where the topmost one was', () => {
+    const [l1, , , l4] = ids();
+    const g2 = store().groupLayers([l4!, l1!])!;
+    expect(names()).toEqual(['Layer 2', 'Layer 3', 'Layer 1', 'Layer 4', 'Layer 5']);
+    expect([0, 1, 2, 3, 4].map(groupOf)).toEqual([g, g, g2, g2, null]);
+    expect(store().groups.find((x) => x.id === g2)?.name).toBe('Group 2');
+    expect(store().groupLayers(['nope'])).toBeNull();
+  });
+
+  it('takes grouped layers out of their group, dropping it when it empties', () => {
+    const [, l2, l3, , l5] = ids();
+    const g2 = store().groupLayers([l2!, l3!, l5!])!;
+    expect(names()).toEqual(['Layer 1', 'Layer 4', 'Layer 2', 'Layer 3', 'Layer 5']);
+    expect(store().groups.map((x) => x.id)).toEqual([g2]);
+  });
+
+  it('never gathers a new group inside another one', () => {
+    store().moveLayer(ids()[3]!, 3, g); // L2, L3, L4 grouped
+    const [l1, , l3] = ids();
+    const g2 = store().groupLayers([l1!, l3!])!;
+    expect(names()).toEqual(['Layer 2', 'Layer 4', 'Layer 1', 'Layer 3', 'Layer 5']);
+    expect([0, 1, 2, 3, 4].map(groupOf)).toEqual([g, g, g2, g2, null]);
+  });
+
+  it('plans a flatten in the topmost layer’s place', () => {
+    const [l1, l2, l3, l4] = ids();
+    expect(flattenPlan(store(), [l2!])).toBeNull();
+
+    // All in one group: the merged layer stays in it.
+    const inGroup = flattenPlan(store(), [l3!, l2!])!;
+    expect(inGroup.sources.map((l) => l.name)).toEqual(['Layer 2', 'Layer 3']);
+    expect(inGroup).toMatchObject({ index: 1, groupId: g, name: 'Layer 3' });
+
+    // Mixed: it lands outside, above the group it would split.
+    store().moveLayer(l4!, 3, g); // L2, L3, L4 grouped
+    const mixed = flattenPlan(store(), [l1!, l3!])!;
+    expect(mixed.rest.map((l) => l.name)).toEqual(['Layer 2', 'Layer 4', 'Layer 5']);
+    expect(mixed).toMatchObject({ index: 2, groupId: null });
+
+    // Between the group's other layers when they share it.
+    expect(flattenPlan(store(), [l2!, l3!])).toMatchObject({ index: 1, groupId: g });
   });
 
   it('won’t delete a group holding every layer', () => {

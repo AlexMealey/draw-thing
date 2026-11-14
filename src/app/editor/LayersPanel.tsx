@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { type MouseEvent, useRef, useState } from 'react';
 import type { Engine } from '../../engine/Engine';
 import {
   activeIndex,
@@ -78,6 +78,11 @@ export function LayersPanel({ engine, onClose, onNotice, onAdjust }: Props) {
   const [drag, setDrag] = useState<Drag | null>(null);
   const [groupId, setGroupId] = useState<string | null>(null);
   const selectedGroup = groups.find((g) => g.id === groupId);
+  /** Layers ticked to group or flatten together; null when not selecting. */
+  const [picked, setPicked] = useState<string[] | null>(null);
+  const selecting = picked !== null;
+  const pickedSet = new Set(picked);
+  const pickedCount = layers.filter((l) => pickedSet.has(l.id)).length;
 
   const items: Item[] = [];
   for (const row of layerRows({ layers, groups })) {
@@ -90,6 +95,26 @@ export function LayersPanel({ engine, onClose, onNotice, onAdjust }: Props) {
       for (const layer of row.children) items.push({ kind: 'layer', id: layer.id, layer });
     }
   }
+
+  /** Shift/Ctrl/⌘-click starts a selection, with the active layer. */
+  const addsToSelection = (e: MouseEvent) => e.shiftKey || e.ctrlKey || e.metaKey;
+  const startPicking = (ids: string[]) => {
+    setPicked(ids);
+    setGroupId(null);
+    setRenaming(null);
+  };
+  const togglePicked = (ids: string[]) => {
+    const all = ids.every((id) => pickedSet.has(id));
+    setPicked((p) => {
+      const rest = (p ?? []).filter((id) => !ids.includes(id));
+      return all ? rest : [...rest, ...ids];
+    });
+  };
+  const pickState = (ids: string[]) => ({
+    checked: ids.length > 0 && ids.every((id) => pickedSet.has(id)),
+    mixed: ids.some((id) => pickedSet.has(id)) && !ids.every((id) => pickedSet.has(id)),
+    onToggle: () => togglePicked(ids),
+  });
 
   const add = () => {
     if (doc.addLayer() === null) onNotice(`Layer limit reached (${maxLayers} at this canvas size)`);
@@ -154,9 +179,18 @@ export function LayersPanel({ engine, onClose, onNotice, onAdjust }: Props) {
       }
       onClose={onClose}
       actions={
-        <button className={ui.iconButton} aria-label="Add layer" onClick={add}>
-          <PlusIcon />
-        </button>
+        <>
+          <button
+            className={ui.textButton}
+            aria-pressed={selecting}
+            onClick={() => (selecting ? setPicked(null) : startPicking([activeId]))}
+          >
+            {selecting ? 'Done' : 'Select'}
+          </button>
+          <button className={ui.iconButton} aria-label="Add layer" onClick={add}>
+            <PlusIcon />
+          </button>
+        </>
       }
     >
       <ul className={styles.list}>
@@ -165,9 +199,15 @@ export function LayersPanel({ engine, onClose, onNotice, onAdjust }: Props) {
             <GroupRow
               key={it.id}
               group={it.group}
-              selected={it.id === groupId}
+              selected={it.id === groupId && !selecting}
               renaming={renaming === it.id}
-              onSelect={() => (it.id === groupId ? setRenaming(it.id) : setGroupId(it.id))}
+              picking={selecting ? pickState(it.children.map((l) => l.id)) : null}
+              onSelect={(e) => {
+                if (selecting) togglePicked(it.children.map((l) => l.id));
+                else if (addsToSelection(e)) startPicking(it.children.map((l) => l.id));
+                else if (it.id === groupId) setRenaming(it.id);
+                else setGroupId(it.id);
+              }}
               onRename={(name) => {
                 if (name.trim() && name !== it.group.name) {
                   doc.updateGroup(it.id, { name: name.trim() });
@@ -186,9 +226,12 @@ export function LayersPanel({ engine, onClose, onNotice, onAdjust }: Props) {
               visible={it.layer.visible}
               blend={it.layer.blendMode}
               grouped={it.layer.groupId !== null}
-              active={it.id === activeId && groupId === null}
+              active={it.id === activeId && groupId === null && !selecting}
               renaming={renaming === it.id}
-              onSelect={() => {
+              picking={selecting ? pickState([it.id]) : null}
+              onSelect={(e) => {
+                if (selecting) return togglePicked([it.id]);
+                if (addsToSelection(e)) return startPicking([...new Set([activeId, it.id])]);
                 if (it.id === activeId && groupId === null) setRenaming(it.id);
                 else doc.selectLayer(it.id);
                 setGroupId(null);
@@ -229,7 +272,39 @@ export function LayersPanel({ engine, onClose, onNotice, onAdjust }: Props) {
         </li>
       </ul>
 
-      {selectedGroup ? (
+      {selecting ? (
+        <div className={styles.props}>
+          <p className={styles.picked} role="status">
+            {pickedCount === 1 ? '1 layer selected' : `${pickedCount} layers selected`}
+          </p>
+          <div className={styles.actions}>
+            <button
+              className={ui.textButton}
+              disabled={pickedCount < 1}
+              onClick={() => {
+                const id = doc.groupLayers(picked);
+                setPicked(null);
+                if (id) setGroupId(id);
+              }}
+            >
+              Group
+            </button>
+            <button
+              className={ui.textButton}
+              disabled={pickedCount < 2}
+              onClick={() => {
+                engine()?.flattenLayers(picked);
+                setPicked(null);
+              }}
+            >
+              Flatten
+            </button>
+            <button className={ui.textButton} onClick={() => setPicked(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : selectedGroup ? (
         <div className={styles.props}>
           <SliderRow
             label="Group opacity"
@@ -412,11 +487,35 @@ function Handle({ label, p, row }: { label: string; p: DragProps; row: () => HTM
 
 const dragStyle = (dy: number) => (dy ? { transform: `translateY(${dy}px)` } : undefined);
 
+/** A row's tick while selecting layers; `mixed` for a group with some of its layers ticked. */
+interface Picking {
+  checked: boolean;
+  mixed: boolean;
+  onToggle: () => void;
+}
+
+/** Takes the reorder grip's place while selecting. */
+function PickBox({ label, p }: { label: string; p: Picking }) {
+  return (
+    <input
+      className={styles.pick}
+      type="checkbox"
+      aria-label={label}
+      checked={p.checked}
+      ref={(el) => {
+        if (el) el.indeterminate = p.mixed;
+      }}
+      onChange={p.onToggle}
+    />
+  );
+}
+
 interface GroupRowProps extends DragProps {
   group: LayerGroup;
   selected: boolean;
   renaming: boolean;
-  onSelect: () => void;
+  picking: Picking | null;
+  onSelect: (e: MouseEvent) => void;
   onRename: (name: string) => void;
   onCollapse: () => void;
   onVisible: (visible: boolean) => void;
@@ -430,10 +529,15 @@ function GroupRow(p: GroupRowProps) {
       ref={row}
       className={`${styles.row} ${styles.group} ${g.visible ? '' : styles.hiddenLayer}`}
       aria-current={p.selected}
+      data-picked={p.picking?.checked ?? false}
       data-dragging={p.dragDy !== 0}
       style={dragStyle(p.dragDy)}
     >
-      <Handle label={`Reorder ${g.name}`} p={p} row={() => row.current} />
+      {p.picking ? (
+        <PickBox label={`Select ${g.name}`} p={p.picking} />
+      ) : (
+        <Handle label={`Reorder ${g.name}`} p={p} row={() => row.current} />
+      )}
       <button
         className={styles.collapse}
         aria-label={g.collapsed ? `Expand ${g.name}` : `Collapse ${g.name}`}
@@ -492,7 +596,8 @@ interface RowProps extends DragProps {
   grouped: boolean;
   active: boolean;
   renaming: boolean;
-  onSelect: () => void;
+  picking: Picking | null;
+  onSelect: (e: MouseEvent) => void;
   onRename: (name: string) => void;
   onVisible: (visible: boolean) => void;
   onBlendChip: () => void;
@@ -507,10 +612,15 @@ function LayerRow(p: RowProps) {
       ref={row}
       className={`${styles.row} ${p.grouped ? styles.child : ''} ${p.visible ? '' : styles.hiddenLayer}`}
       aria-current={p.active}
+      data-picked={p.picking?.checked ?? false}
       data-dragging={p.dragDy !== 0}
       style={dragStyle(p.dragDy)}
     >
-      <Handle label={`Reorder ${p.name}`} p={p} row={() => row.current} />
+      {p.picking ? (
+        <PickBox label={`Select ${p.name}`} p={p.picking} />
+      ) : (
+        <Handle label={`Reorder ${p.name}`} p={p} row={() => row.current} />
+      )}
       <button
         className={`${styles.thumb} ${ui.checker}`}
         aria-label={`Select ${p.name}`}

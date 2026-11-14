@@ -20,6 +20,10 @@
   background: rgb(10 132 255 / 0.35);
 }
 
+.row[data-picked='true'] {
+  background: rgb(10 132 255 / 0.22);
+}
+
 .row[data-dragging='true'] {
   z-index: 2;
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.45);
@@ -141,6 +145,20 @@
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+}
+
+.pick {
+  justify-self: center;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+
+.picked {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-text-muted);
 }
 
 .eye {
