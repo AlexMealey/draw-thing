@@ -51,3 +51,22 @@ describe('custom brushes', () => {
     expect(store().adjustments[`paint:${id}`]).toBeUndefined();
   });
 });
+
+describe('cursor outline preferences', () => {
+  beforeEach(() => toolStore.setState(toolStore.getInitialState(), true));
+
+  it('is off by default and is saved with the other preferences', () => {
+    expect(store()).toMatchObject({
+      cursorOutline: false,
+      cursorOutlineSize: 'brush',
+      cursorOutlineFixed: 24,
+    });
+    store().setPrefs({ cursorOutline: true, cursorOutlineSize: 'fixed', cursorOutlineFixed: 40 });
+    const saved = toolStore.persist.getOptions().partialize?.(store());
+    expect(saved).toMatchObject({
+      cursorOutline: true,
+      cursorOutlineSize: 'fixed',
+      cursorOutlineFixed: 40,
+    });
+  });
+});

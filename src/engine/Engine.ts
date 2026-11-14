@@ -108,6 +108,11 @@ export { MAX_DOC_SIZE, screenDocSize };
 
 const SURROUND = [0.173, 0.173, 0.18, 1] as const;
 const CURSOR_RING = [0.38, 0.38, 0.38, 0.85] as const; // premultiplied mid-gray: visible on light and dark
+/** The dashed cursor outline alternates these (premultiplied), so it shows on any color. */
+const OUTLINE_DARK = [0.11, 0.11, 0.11, 0.55] as const;
+const OUTLINE_LIGHT = [0.55, 0.55, 0.55, 0.55] as const;
+/** Smallest outline radius, screen CSS px, so tiny brushes still show where the pen is. */
+const OUTLINE_MIN_RADIUS = 4;
 const KEY_ZOOM = 1.25;
 /** The most recent history steps stay uncompressed so undoing them is instant. */
 const KEEP_RAW_STEPS = 8;
@@ -218,6 +223,12 @@ export class Engine implements StrokeSink {
   private queue: InputSample[] = [];
   private predicted: InputSample[] = [];
   private hoverSample: InputSample | null = null;
+  /** Latest raw pen position of the stroke in progress, and what's drawing it. */
+  private penAt: InputSample | null = null;
+  private strokePointer = '';
+  /** Dashed outline in place of the pointer; `cursorSize` is 'brush' or a screen px diameter. */
+  private cursorOutline = false;
+  private cursorSize: 'brush' | number = 'brush';
   /** Document area that needs recompositing: a rect, everything, or nothing. */
   private docDirty: Rect | 'all' | null = 'all';
 
@@ -389,6 +400,17 @@ export class Engine implements StrokeSink {
     this.snapRotation = prefs.snapRotation;
     this.keyZoom = prefs.keyZoom;
     this.wheelAction = prefs.wheel;
+  }
+
+  /**
+   * `outline`: a dashed ring replaces the pointer and stays visible while drawing. `size`: the
+   * brush size, or a fixed diameter in screen CSS px.
+   */
+  setCursorPrefs(prefs: { outline: boolean; size: 'brush' | number }) {
+    this.cursorOutline = prefs.outline;
+    this.cursorSize = prefs.size;
+    if (!this.panPointer && !this.spaceHeld) this.canvas.style.cursor = this.baseCursor();
+    this.requestFrame();
   }
 
   /** Rotates the view about the middle of the area the UI leaves clear (positive = clockwise). */
@@ -909,6 +931,8 @@ export class Engine implements StrokeSink {
     };
     this.recorder?.begin(s, this.tool, opts);
     this.hoverSample = null;
+    this.penAt = s;
+    this.strokePointer = opts.pointerType;
     this.queue.push(s);
     this.requestFrame();
   }
@@ -921,6 +945,7 @@ export class Engine implements StrokeSink {
     }
     if (!this.stroke || this.pending) return;
     this.recorder?.extend(samples);
+    if (last) this.penAt = last;
     for (const s of samples) this.queue.push(s);
     this.requestFrame();
   }
@@ -940,6 +965,8 @@ export class Engine implements StrokeSink {
     if (!this.stroke || this.pending) return;
     this.recorder?.end('commit');
     this.pending = 'commit';
+    // A mouse lifted without moving gets no hover event; keep the outline where it is.
+    if (this.cursorOutline && this.strokePointer !== 'touch') this.hoverSample = this.penAt;
     this.requestFrame();
   }
 
@@ -1122,7 +1149,23 @@ export class Engine implements StrokeSink {
         preset: live.preset,
       });
     }
-    if (this.hoverSample && !live) {
+    if (this.cursorOutline) {
+      const at = this.hoverSample ?? (live && this.strokePointer !== 'touch' ? this.penAt : null);
+      if (at && !this.picking && !this.panPointer && !this.spaceHeld) {
+        const radius =
+          this.cursorSize === 'brush' ? this.tool.size / 2 : (this.cursorSize / 2) * screenAA;
+        overlay.clear();
+        overlay.push(at.x, at.y, Math.max(radius, OUTLINE_MIN_RADIUS * screenAA), 1);
+        this.dabs.draw(overlay, {
+          docToClip,
+          color: OUTLINE_DARK,
+          color2: OUTLINE_LIGHT,
+          aa: screenAA,
+          ring: true,
+          dashed: true,
+        });
+      }
+    } else if (this.hoverSample && !live) {
       overlay.clear();
       overlay.push(this.hoverSample.x, this.hoverSample.y, this.tool.size / 2, 1);
       this.dabs.draw(overlay, { docToClip, color: CURSOR_RING, aa: screenAA, ring: true });
@@ -1460,9 +1503,17 @@ export class Engine implements StrokeSink {
   private onSpace = (e: KeyboardEvent) => {
     if (e.code !== 'Space' || isEditable(e.target)) return;
     e.preventDefault(); // no page scroll, no button activation
-    this.spaceHeld = e.type === 'keydown';
-    if (!this.panPointer) this.canvas.style.cursor = this.spaceHeld ? 'grab' : '';
+    const held = e.type === 'keydown';
+    if (held === this.spaceHeld) return; // key repeat
+    this.spaceHeld = held;
+    if (!this.panPointer) this.canvas.style.cursor = held ? 'grab' : this.baseCursor();
+    if (this.cursorOutline) this.requestFrame(); // the outline gives way to the grab hand
   };
+
+  /** The pointer over the canvas when not panning: none while the dashed outline stands in. */
+  private baseCursor() {
+    return this.cursorOutline ? 'none' : '';
+  }
 
   private onPanDown = (e: PointerEvent) => {
     const pan =
@@ -1490,7 +1541,8 @@ export class Engine implements StrokeSink {
     if (!this.panPointer || e.pointerId !== this.panPointer.id) return;
     e.stopImmediatePropagation();
     this.panPointer = null;
-    this.canvas.style.cursor = this.spaceHeld ? 'grab' : '';
+    this.canvas.style.cursor = this.spaceHeld ? 'grab' : this.baseCursor();
+    if (this.cursorOutline) this.requestFrame();
   };
 
   private notice(message: string) {

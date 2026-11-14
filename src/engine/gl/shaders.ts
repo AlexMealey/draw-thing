@@ -39,6 +39,8 @@ in float v_alpha;
 uniform vec4 u_color; // premultiplied
 uniform float u_aa;
 uniform bool u_ring;
+uniform bool u_dashed; // ring only: alternate u_color and u_color2 dashes, ~4 screen px each
+uniform vec4 u_color2; // premultiplied
 uniform float u_hardness;
 uniform float u_roundness;
 uniform sampler2D u_grain;
@@ -49,6 +51,15 @@ out vec4 o;
 void main() {
   if (u_ring) {
     float ring = clamp(1.0 - abs(length(v_local) - v_radius) / u_aa, 0.0, 1.0);
+    if (u_dashed) {
+      // u_aa is 1 screen px in document units, so this is the circumference in screen px.
+      float n = max(8.0, floor(6.2831853 * v_radius / u_aa / 8.0)); // whole dashes: seamless
+      float t = fract(atan(v_local.y, v_local.x) / 6.2831853 * n);
+      float edge = n * u_aa / (6.2831853 * v_radius); // 1 screen px in t units
+      float dash = smoothstep(0.5 - edge, 0.5, t) * (1.0 - smoothstep(1.0 - edge, 1.0, t));
+      o = mix(u_color, u_color2, dash) * ring;
+      return;
+    }
     o = u_color * ring;
     return;
   }

@@ -82,6 +82,9 @@ export function EditorScreen({
   const snapRotation = useTools((s) => s.snapRotation);
   const keyZoom = useTools((s) => s.keyZoomStep);
   const wheel = useTools((s) => s.wheel);
+  const cursorOutline = useTools((s) => s.cursorOutline);
+  const cursorOutlineSize = useTools((s) => s.cursorOutlineSize);
+  const cursorOutlineFixed = useTools((s) => s.cursorOutlineFixed);
   const tool = useMemo(
     () => toolSettings({ ...toolStore.getState(), mode, color, presetIds, adjustments, overrides }),
     [mode, color, presetIds, adjustments, overrides],
@@ -118,6 +121,13 @@ export function EditorScreen({
   useEffect(() => {
     engine()?.setViewPrefs({ snapRotation, keyZoom, wheel });
   }, [engine, snapRotation, keyZoom, wheel]);
+
+  useEffect(() => {
+    engine()?.setCursorPrefs({
+      outline: cursorOutline,
+      size: cursorOutlineSize === 'brush' ? 'brush' : cursorOutlineFixed,
+    });
+  }, [engine, cursorOutline, cursorOutlineSize, cursorOutlineFixed]);
 
   useEffect(() => {
     engine()?.setEyedropper(eyedropper);

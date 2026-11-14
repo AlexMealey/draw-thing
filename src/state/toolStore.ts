@@ -10,6 +10,8 @@ export type ToolMode = 'paint' | 'erase';
 export type ColorPicker = 'square' | 'wheel';
 /** What a mouse wheel does over the canvas (Ctrl/⌘ + wheel and trackpad pinch always zoom). */
 export type WheelAction = 'zoom' | 'pan';
+/** The dashed cursor outline follows the brush size, or stays a fixed size on screen. */
+export type CursorOutlineSize = 'brush' | 'fixed';
 
 export interface BrushAdjustments {
   size: number;
@@ -61,6 +63,11 @@ export interface ToolState {
   /** Slider steps while Shift or Alt is held, in the slider's units (px, %, °). */
   stepShift: number;
   stepAlt: number;
+  /** A dashed outline replaces the pointer over the canvas, and stays visible while drawing. */
+  cursorOutline: boolean;
+  cursorOutlineSize: CursorOutlineSize;
+  /** Diameter of the fixed-size outline, screen CSS px. */
+  cursorOutlineFixed: number;
 
   setMode(mode: ToolMode): void;
   selectPreset(id: string): void;
@@ -96,7 +103,10 @@ type Pref =
   | 'colorSliders'
   | 'wheel'
   | 'stepShift'
-  | 'stepAlt';
+  | 'stepAlt'
+  | 'cursorOutline'
+  | 'cursorOutlineSize'
+  | 'cursorOutlineFixed';
 
 const MAX_RECENT = 10;
 const MODES: readonly ToolMode[] = ['paint', 'erase'];
@@ -179,6 +189,9 @@ export const toolStore = createStore<ToolState>()(
       wheel: 'zoom',
       stepShift: 5,
       stepAlt: 10,
+      cursorOutline: false,
+      cursorOutlineSize: 'brush',
+      cursorOutlineFixed: 24,
 
       setMode: (mode) => set({ mode }),
       selectPreset: (id) => set({ presetIds: { ...get().presetIds, [get().mode]: id } }),
@@ -292,6 +305,9 @@ export const toolStore = createStore<ToolState>()(
         wheel: s.wheel,
         stepShift: s.stepShift,
         stepAlt: s.stepAlt,
+        cursorOutline: s.cursorOutline,
+        cursorOutlineSize: s.cursorOutlineSize,
+        cursorOutlineFixed: s.cursorOutlineFixed,
       }),
     },
   ),

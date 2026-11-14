@@ -99,6 +99,9 @@ installed.
       pinches. *CI.*
 - [ ] Surface Pen eraser end erases, the barrel button picks a color, and hover shows the brush
       ring (also M2+ iPad Pro with Pencil hover).
+- [ ] Actions → Brush cursor → dashed outline: the pointer is hidden, the dashed ring follows the
+      pen while hovering and while drawing (light pressure too), and Fixed keeps one on-screen size
+      at any zoom. Space shows the grab hand; turning it off brings the pointer back.
 - [ ] No page scroll, rubber-band, pull-to-refresh, double-tap zoom, text-selection loupe,
       callout, Windows press-and-hold menu or pen flicks.
 - [ ] Two-, three- and four-finger taps and quick pinch-to-fit are reliable and never leave a

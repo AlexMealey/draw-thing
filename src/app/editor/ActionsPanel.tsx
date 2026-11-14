@@ -75,6 +75,9 @@ export function ActionsPanel({
   const wheel = useTools((s) => s.wheel);
   const stepShift = useTools((s) => s.stepShift);
   const stepAlt = useTools((s) => s.stepAlt);
+  const cursorOutline = useTools((s) => s.cursorOutline);
+  const cursorOutlineSize = useTools((s) => s.cursorOutlineSize);
+  const cursorOutlineFixed = useTools((s) => s.cursorOutlineFixed);
   const { setPrefs } = toolStore.getState();
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -251,6 +254,51 @@ export function ActionsPanel({
         format={percent}
         onChange={(v) => setPrefs({ sizeStep: v })}
       />
+
+      <h3 className={ui.section}>Brush cursor</h3>
+      <label className={ui.switch}>
+        Dashed outline instead of the pointer
+        <input
+          type="checkbox"
+          checked={cursorOutline}
+          onChange={(e) => setPrefs({ cursorOutline: e.target.checked })}
+        />
+      </label>
+      {cursorOutline && (
+        <>
+          <p style={{ margin: '0 0 4px', fontSize: 13, color: 'var(--color-text-muted)' }}>
+            Stays visible while drawing, so a light touch or a drawing tablet never loses track of
+            where the pen is.
+          </p>
+          <div className={ui.switch} role="radiogroup" aria-label="Outline size">
+            Outline size
+            <span style={{ display: 'flex', gap: 6 }}>
+              {(['brush', 'fixed'] as const).map((m) => (
+                <button
+                  key={m}
+                  role="radio"
+                  aria-checked={cursorOutlineSize === m}
+                  className={`${ui.textButton} ${cursorOutlineSize === m ? ui.primary : ''}`}
+                  onClick={() => setPrefs({ cursorOutlineSize: m })}
+                >
+                  {m === 'brush' ? 'Brush size' : 'Fixed'}
+                </button>
+              ))}
+            </span>
+          </div>
+          {cursorOutlineSize === 'fixed' && (
+            <SliderRow
+              label="Fixed size"
+              value={cursorOutlineFixed}
+              min={8}
+              max={200}
+              step={1}
+              format={(v) => `${Math.round(v)} px`}
+              onChange={(v) => setPrefs({ cursorOutlineFixed: Math.round(v) })}
+            />
+          )}
+        </>
+      )}
 
       <h3 className={ui.section}>Input</h3>
       <p style={{ margin: '0 0 4px', fontSize: 13, color: 'var(--color-text-muted)' }}>
