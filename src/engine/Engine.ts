@@ -1,15 +1,23 @@
 import {
   activeIndex,
+  allLayerIds,
+  allLayers,
   type Background,
   documentStore,
   type DocumentState,
   effectiveLayer,
   flattenPlan,
+  frameIndex,
+  frameOfLayer,
+  frameStack,
   type LayerGroup,
   type LayerMeta,
+  makeFrame,
+  makeGroup,
   makeLayer,
 } from '../state/documentStore';
 import { adjustmentStore } from '../state/adjustmentStore';
+import { animationStore } from '../state/animationStore';
 import { historyStore } from '../state/historyStore';
 import { thumbnailStore } from '../state/thumbnailStore';
 import { viewStore } from '../state/viewStore';
@@ -35,6 +43,10 @@ import {
   isNeutral,
   NEUTRAL_ADJUSTMENT,
 } from './filters/Filters';
+import { Animator } from './frames/Animator';
+import { DEFAULT_ONION, type OnionSettings } from './frames/onion';
+import { ParkedTiles } from './frames/ParkedTiles';
+import { frameAtTick } from './frames/timing';
 import { compressTile, inflateTile } from './history/compress';
 import {
   type DocSnapshot,
@@ -71,10 +83,12 @@ import {
   readPremultiplied,
   unpremultiply,
 } from './render/readback';
+import { Scaler } from './render/Scaler';
 import { Thumbnailer } from './render/Thumbnailer';
 import { perf } from './perf';
 import { ema, engineStats } from './stats';
 import { type Insets, NO_INSETS, ViewTransform } from './view/ViewTransform';
+import { WheelClassifier } from './view/wheel';
 
 export interface EngineOptions {
   /** Multi-finger tap: 2 = undo, 3 = redo, 4 = toggle UI. */
@@ -109,6 +123,11 @@ export { MAX_DOC_SIZE, screenDocSize };
 
 const SURROUND = [0.173, 0.173, 0.18, 1] as const;
 const CURSOR_RING = [0.38, 0.38, 0.38, 0.85] as const; // premultiplied mid-gray: visible on light and dark
+/** The dashed cursor outline alternates these (premultiplied), so it shows on any color. */
+const OUTLINE_DARK = [0.11, 0.11, 0.11, 0.55] as const;
+const OUTLINE_LIGHT = [0.55, 0.55, 0.55, 0.55] as const;
+/** Smallest outline radius, screen CSS px, so tiny brushes still show where the pen is. */
+const OUTLINE_MIN_RADIUS = 4;
 const KEY_ZOOM = 1.25;
 /** The most recent history steps stay uncompressed so undoing them is instant. */
 const KEEP_RAW_STEPS = 8;
@@ -219,6 +238,12 @@ export class Engine implements StrokeSink {
   private queue: InputSample[] = [];
   private predicted: InputSample[] = [];
   private hoverSample: InputSample | null = null;
+  /** Latest raw pen position of the stroke in progress, and what's drawing it. */
+  private penAt: InputSample | null = null;
+  private strokePointer = '';
+  /** Dashed outline in place of the pointer; `cursorSize` is 'brush' or a screen px diameter. */
+  private cursorOutline = false;
+  private cursorSize: 'brush' | number = 'brush';
   /** Document area that needs recompositing: a rect, everything, or nothing. */
   private docDirty: Rect | 'all' | null = 'all';
 
@@ -237,6 +262,26 @@ export class Engine implements StrokeSink {
    * comes through a history entry, whose tiles are reused here instead of reading the GPU again.
    */
   private unsaved = new Map<string, Map<number, TileData>>();
+  /**
+   * Pixels of layers without a texture (other frames), and copies of resident ones as they were
+   * uploaded. `changedSinceUpload` lists resident layers whose copy is stale.
+   */
+  private parked = new ParkedTiles();
+  private changedSinceUpload = new Set<string>();
+  private parkTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Frame previews, onion skin, playback and export renders (created with the GPU resources). */
+  private animator!: Animator;
+  private onion: OnionSettings = { ...DEFAULT_ONION };
+  /** Playback: when it started (ms), or null when stopped. */
+  private playStart: number | null = null;
+  /** Preparing previews before playback starts. */
+  private preparing = false;
+  private frameThumbTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The last composite left out the background (the onion skin goes under the layers). */
+  private composedWithoutBg = false;
+  /** Composite with the background for a moment, onion skin or not (exports, eyedropper). */
+  private plainComposite = false;
+  private exportScaler: { scaler: Scaler; out: Target } | null = null;
   /** True while a saved document's tiles are being uploaded; input waits. */
   private loading = false;
 
@@ -252,6 +297,8 @@ export class Engine implements StrokeSink {
   private spaceHeld = false;
   private snapRotation = true;
   private keyZoom = KEY_ZOOM;
+  private wheelAction: 'zoom' | 'pan' = 'zoom';
+  private wheel = new WheelClassifier();
   private panPointer: { id: number; x: number; y: number } | null = null;
 
   private batch = new DabBatch();
@@ -278,19 +325,26 @@ export class Engine implements StrokeSink {
     const size = saved ? { w: saved.width, h: saved.height } : (opts.docSize ?? screenDocSize());
     this.docW = Math.max(1, Math.min(cap, Math.round(size.w)));
     this.docH = Math.max(1, Math.min(cap, Math.round(size.h)));
-    this.createGpu();
     this.tileIO = new TileIO(gl, tileGrid(this.docW, this.docH));
+    this.createGpu();
     thumbnailStore.setState({ urls: {} });
+    animationStore.setState({ thumbs: {}, playing: false, preparing: null });
     viewStore.setState({ rotation: 0 });
     this.history = new History(
       { maxBytes: historyBudgetBytes(), maxEntries: 250 },
       this.publishHistory,
     );
 
-    let maxLayers = maxLayersFor(this.docW * this.docH * 4, gpuBudgetBytes());
+    // An animation also needs two full-size targets to render whole frames with.
+    const layerBytes = this.docW * this.docH * 4;
+    const animated = saved?.animation?.enabled === true;
+    let maxLayers = maxLayersFor(layerBytes, gpuBudgetBytes() - (animated ? 2 * layerBytes : 0));
     if (saved) {
-      // A document from a bigger device keeps its layers; it just can't gain more.
-      maxLayers = Math.max(maxLayers, saved.layers.length);
+      // A document from a bigger device keeps its layers; it just can't gain more. The limit is
+      // per frame: only the active frame is on the GPU.
+      const perFrame = new Map<string | undefined, number>();
+      for (const l of saved.layers) perFrame.set(l.frameId, (perFrame.get(l.frameId) ?? 0) + 1);
+      maxLayers = Math.max(maxLayers, ...perFrame.values());
       documentStore.getState().load({ ...saved, width: this.docW, height: this.docH, maxLayers });
     } else {
       documentStore.getState().reset({
@@ -381,10 +435,25 @@ export class Engine implements StrokeSink {
     this.requestFrame();
   }
 
-  /** `snapRotation`: twisting ends on a quarter turn when close to one. `keyZoom`: Ctrl/⌘ +/− step. */
-  setViewPrefs(prefs: { snapRotation: boolean; keyZoom: number }) {
+  /**
+   * `snapRotation`: twisting ends on a quarter turn when close to one. `keyZoom`: Ctrl/⌘ +/− step,
+   * also one mouse wheel notch. `wheel`: whether the mouse wheel zooms or pans.
+   */
+  setViewPrefs(prefs: { snapRotation: boolean; keyZoom: number; wheel: 'zoom' | 'pan' }) {
     this.snapRotation = prefs.snapRotation;
     this.keyZoom = prefs.keyZoom;
+    this.wheelAction = prefs.wheel;
+  }
+
+  /**
+   * `outline`: a dashed ring replaces the pointer and stays visible while drawing. `size`: the
+   * brush size, or a fixed diameter in screen CSS px.
+   */
+  setCursorPrefs(prefs: { outline: boolean; size: 'brush' | number }) {
+    this.cursorOutline = prefs.outline;
+    this.cursorSize = prefs.size;
+    if (!this.panPointer && !this.spaceHeld) this.canvas.style.cursor = this.baseCursor();
+    this.requestFrame();
   }
 
   /** Rotates the view about the middle of the area the UI leaves clear (positive = clockwise). */
@@ -626,6 +695,236 @@ export class Engine implements StrokeSink {
     });
   }
 
+  // ── Frames ──────────────────────────────────────────────────────────────────
+
+  /** Whether frames can change now (not mid-stroke, adjustment, opening or GPU reset). */
+  private framesBusy(): boolean {
+    if (this.lost) return true;
+    if (this.stroke) return true;
+    if (this.loading) {
+      this.notice('Still opening…');
+      return true;
+    }
+    if (this.adjustment) {
+      this.notice('Apply or cancel the adjustment first');
+      return true;
+    }
+    return false;
+  }
+
+  setOnion(settings: OnionSettings) {
+    this.onion = { ...settings };
+    this.markDirty('all');
+  }
+
+  /** Starts (after preparing the frame previews) or stops playback. */
+  setPlaying(play: boolean) {
+    const running = this.playStart !== null || this.preparing;
+    if (play === running) return;
+    if (play) {
+      const doc = documentStore.getState();
+      if (!doc.animation.enabled || this.framesBusy()) return;
+      this.hoverSample = null;
+      this.preparing = true;
+      animationStore.setState({ playing: true, preparing: 0 });
+    } else {
+      this.playStart = null;
+      this.preparing = false;
+      animationStore.setState({ playing: false, preparing: null });
+      this.scheduleFrameThumbs();
+      this.markDirty('all');
+    }
+    this.requestFrame();
+  }
+
+  get playing(): boolean {
+    return this.playStart !== null || this.preparing;
+  }
+
+  /**
+   * One frame flattened and resized, straight alpha, for export. `opaque` puts it on the
+   * background color even when the background is hidden. Null while pixels can't be read.
+   */
+  frameImage(
+    frameId: string,
+    w: number,
+    h: number,
+    opts: { smooth: boolean; opaque: boolean },
+  ): ImageData | null {
+    if (this.disposed || this.lost || this.loading || this.stroke) return null;
+    for (const entry of [...this.captures.keys()]) entry.pending?.();
+    const doc = documentStore.getState();
+    const [r, g, b] = parseHexColor(doc.background.color);
+    const bg: Rgba | null = opts.opaque || doc.background.visible ? [r, g, b, 1] : null;
+    let out = this.animator.render(doc, frameId, bg);
+    if (w !== this.docW || h !== this.docH) {
+      const e = this.exportScaler;
+      if (!e || e.out.w !== w || e.out.h !== h || e.scaler.smooth !== opts.smooth) {
+        this.disposeExportScaler();
+        this.exportScaler = {
+          scaler: new Scaler(this.gl, this.docW, this.docH, w, h, opts.smooth),
+          out: createTarget(this.gl, w, h),
+        };
+      }
+      this.exportScaler!.scaler.run(out, this.exportScaler!.out);
+      out = this.exportScaler!.out;
+    }
+    const px = readPremultiplied(this.gl, out);
+    if (!bg) unpremultiply(px);
+    return new ImageData(px, w, h);
+  }
+
+  /** Frees what frameImage() kept for the next call (after an export). */
+  disposeExportScaler() {
+    const e = this.exportScaler;
+    this.exportScaler = null;
+    if (!e || this.lost) return;
+    e.scaler.dispose();
+    deleteTarget(this.gl, e.out);
+  }
+
+  /** Shows another frame for drawing (not an undo step, like selecting a layer). */
+  selectFrame(id: string): boolean {
+    const doc = documentStore.getState();
+    if (id === doc.activeFrameId) return true;
+    this.setPlaying(false);
+    if (this.framesBusy()) return false;
+    return doc.selectFrame(id);
+  }
+
+  /** Steps to the previous (-1) or next (+1) frame, wrapping around. */
+  stepFrame(delta: number): boolean {
+    const doc = documentStore.getState();
+    const n = doc.frames.length;
+    if (n < 2) return false;
+    const i = frameIndex(doc);
+    return this.selectFrame(doc.frames[(((i + delta) % n) + n) % n]!.id);
+  }
+
+  /** Adds an empty frame (one blank layer) after the active one and shows it. */
+  newFrame(): string | null {
+    if (this.framesBusy()) return null;
+    const doc = documentStore.getState();
+    const before = snapshot(doc);
+    const frame = makeFrame();
+    const layer = makeLayer('Layer 1');
+    this.withoutRecording(() =>
+      doc.insertFrame(
+        frame,
+        { layers: [layer], groups: [], activeLayerId: layer.id },
+        frameIndex(doc) + 1,
+      ),
+    );
+    this.pushHistory({
+      label: 'New frame',
+      doc: { before, after: snapshot(documentStore.getState()) },
+      pixels: new Map(),
+      time: performance.now(),
+      bytes: 0,
+    });
+    return frame.id;
+  }
+
+  /**
+   * Copies the active frame (every layer and group, pixels included) to a new frame right after
+   * it, with the same hold, and shows the copy.
+   */
+  cloneFrame(): string | null {
+    if (this.framesBusy()) return null;
+    for (const entry of [...this.captures.keys()]) entry.pending?.();
+    const doc = documentStore.getState();
+    const before = snapshot(doc);
+    const source = doc.frames[frameIndex(doc)];
+    if (!source) return null;
+    const groupIds = new Map<string, string>();
+    const groups = doc.groups.map((g) => {
+      const id = makeGroup(g.name).id;
+      groupIds.set(g.id, id);
+      return { ...g, id };
+    });
+    const pixels = new Map<string, LayerTiles>();
+    let activeLayerId = '';
+    const layers = doc.layers.map((l) => {
+      const copy: LayerMeta = {
+        ...l,
+        id: makeLayer(l.name).id,
+        groupId: l.groupId === null ? null : (groupIds.get(l.groupId) ?? null),
+      };
+      if (l.id === doc.activeLayerId) activeLayerId = copy.id;
+      const target = this.layers.get(l.id);
+      if (target) {
+        const tiles = this.tileIO.readAll(target);
+        // The original is parked next with exactly these pixels: no second readback.
+        this.parked.setRaw(l.id, tiles);
+        this.changedSinceUpload.delete(l.id);
+        this.parked.setRaw(copy.id, tiles);
+        pixels.set(copy.id, TileIO.diff(new Map(), tiles));
+      }
+      return copy;
+    });
+    const frame = makeFrame(source.hold);
+    this.withoutRecording(() =>
+      doc.insertFrame(
+        frame,
+        { layers, groups, activeLayerId: activeLayerId || layers[layers.length - 1]!.id },
+        frameIndex(doc) + 1,
+      ),
+    );
+    this.pushHistory({
+      label: 'Clone frame',
+      doc: { before, after: snapshot(documentStore.getState()) },
+      pixels,
+      time: performance.now(),
+      bytes: 0,
+    });
+    return frame.id;
+  }
+
+  /** Deletes a frame (never the last one). Its pixels stay in the undo history. */
+  deleteFrame(id: string): boolean {
+    const doc = documentStore.getState();
+    if (doc.frames.length <= 1) {
+      this.notice('An artwork needs at least one frame');
+      return false;
+    }
+    if (this.framesBusy()) return false;
+    const stack = frameStack(doc, id);
+    if (!stack) return false;
+    const before = snapshot(doc);
+    const pixels = new Map<string, LayerTiles>();
+    for (const l of stack.layers) pixels.set(l.id, this.removalTiles(l.id));
+    if (!this.withoutRecording(() => doc.removeFrame(id))) return false;
+    this.pushHistory({
+      label: 'Delete frame',
+      doc: { before, after: snapshot(documentStore.getState()) },
+      pixels,
+      time: performance.now(),
+      bytes: 0,
+    });
+    return true;
+  }
+
+  /** History tiles for a layer that's going away: its content, from the GPU or parked. */
+  private removalTiles(layerId: string): LayerTiles {
+    const target = this.layers.get(layerId);
+    if (target && !this.lost) return TileIO.diff(this.tileIO.readAll(target), new Map());
+    return this.parked.removal(layerId);
+  }
+
+  /** Deflates parked tiles once things are quiet, keeping the neighbouring frames raw. */
+  private scheduleParkedCompression() {
+    clearTimeout(this.parkTimer);
+    this.parkTimer = setTimeout(() => {
+      const doc = documentStore.getState();
+      const i = frameIndex(doc);
+      const keep = new Set<string>();
+      for (const f of [doc.frames[i - 1], doc.frames[i + 1]]) {
+        for (const l of (f && frameStack(doc, f.id)?.layers) ?? []) keep.add(l.id);
+      }
+      void this.parked.compressIdle(keep, () => this.disposed);
+    }, COMPRESS_DELAY_MS);
+  }
+
   /** PNG data URL of the composited document, gallery-sized. */
   documentThumbnail(): string | null {
     const img = this.galleryThumbnail();
@@ -658,12 +957,20 @@ export class Engine implements StrokeSink {
           raw.set(key, data);
         }
         const target = this.layers.get(layerId);
-        if (!target) continue;
+        if (!target) {
+          // Another frame's layer: keep its tiles (still deflated) until the frame is shown.
+          await this.parked.setStored(layerId, layer);
+          if (this.disposed || generation !== this.gpuGeneration) return;
+          continue;
+        }
         this.tileIO.write(target, raw);
+        this.parked.setRaw(layerId, nonEmpty(raw));
+        this.changedSinceUpload.delete(layerId);
         this.compositor.invalidate();
         this.markDirty('all');
         this.markThumbs([layerId]);
       }
+      this.scheduleParkedCompression();
     } finally {
       // After a context loss, restoring owns the flag.
       if (generation === this.gpuGeneration) this.loading = false;
@@ -687,13 +994,18 @@ export class Engine implements StrokeSink {
     if (this.disposed || this.lost || this.loading) return null;
     const out = new Map<string, Map<number, TileData>>();
     for (const [id, target] of this.layers) out.set(id, this.tileIO.readAll(target));
+    const doc = documentStore.getState();
+    for (const l of allLayers(doc)) {
+      if (out.has(l.id)) continue;
+      out.set(l.id, this.parked.tileData(l.id) ?? new Map());
+    }
     return out;
   }
 
   /** The composited document, at most 512 px, for the gallery. */
   galleryThumbnail(): ImageData | null {
     if (this.disposed || this.lost) return null;
-    if (this.docDirty) this.renderNow();
+    if (this.docDirty || this.composedWithoutBg) this.renderPlain();
     this.galleryThumbnailer ??= new Thumbnailer(this.gl, this.docW, this.docH, GALLERY_THUMB);
     return this.galleryThumbnailer.renderImage(this.compositor.output);
   }
@@ -703,7 +1015,7 @@ export class Engine implements StrokeSink {
    * even when the background is hidden (JPEG has no transparency).
    */
   exportImage(opaque: boolean): ImageData {
-    this.renderNow();
+    this.renderPlain();
     const px = readPremultiplied(this.gl, this.compositor.output);
     if (opaque)
       flattenOnto(
@@ -776,17 +1088,19 @@ export class Engine implements StrokeSink {
 
   /** Test hook: renders now and returns an FNV-1a hash of the composited document. */
   debugHash(): string {
-    this.renderNow();
-    const gl = this.gl;
-    const out = this.compositor.output;
-    const data = new Uint8Array(out.w * out.h * 4);
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, out.fbo);
-    gl.readPixels(0, 0, out.w, out.h, gl.RGBA, gl.UNSIGNED_BYTE, data);
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-    const words = new Uint32Array(data.buffer);
-    let h = 0x811c9dc5;
-    for (let i = 0; i < words.length; i++) h = Math.imul(h ^ (words[i] ?? 0), 0x01000193);
-    return (h >>> 0).toString(16).padStart(8, '0');
+    this.renderPlain();
+    return hashTarget(this.gl, this.compositor.output);
+  }
+
+  /** Test hook: a hash of one frame, flattened on its background. */
+  debugFrameHash(frameId: string): string {
+    const doc = documentStore.getState();
+    return hashTarget(this.gl, this.animator.render(doc, frameId, backgroundColor(doc)));
+  }
+
+  /** The frames' ids, in order (tests). */
+  frameIds(): string[] {
+    return documentStore.getState().frames.map((f) => f.id);
   }
 
   /** Records the strokes from now on (diagnostics), until stopRecording(). */
@@ -870,6 +1184,10 @@ export class Engine implements StrokeSink {
     cancelAnimationFrame(this.raf);
     clearTimeout(this.compressTimer);
     clearTimeout(this.thumbTimer);
+    clearTimeout(this.parkTimer);
+    clearTimeout(this.frameThumbTimer);
+    this.parked.clear();
+    this.setPlaying(false);
     this.unsubscribe();
     this.input.dispose();
     this.ro.disconnect();
@@ -886,6 +1204,8 @@ export class Engine implements StrokeSink {
     for (const entry of this.captures.keys()) entry.pending?.(); // frees the readback buffers
     this.thumbnailer.dispose();
     this.galleryThumbnailer?.dispose();
+    this.disposeExportScaler();
+    this.animator.dispose();
     this.dabs.dispose();
     this.filters.dispose();
     if (this.adjustment) this.endAdjustment();
@@ -909,11 +1229,27 @@ export class Engine implements StrokeSink {
     this.presenter = new Presenter(gl, this.quad);
     this.thumbnailer = new Thumbnailer(gl, this.docW, this.docH);
     this.galleryThumbnailer = null;
+    this.exportScaler = null;
+    const dpr = devicePixelRatio || 1;
+    this.animator = new Animator({
+      gl,
+      quad: this.quad,
+      compositor: this.compositor,
+      tileIO: this.tileIO,
+      parked: this.parked,
+      resident: (id) => this.layers.get(id),
+      docW: this.docW,
+      docH: this.docH,
+      cacheBudget: Math.min(256 * 1024 * 1024, gpuBudgetBytes() * 0.2),
+      screenMax: Math.max(screen.width, screen.height) * dpr,
+    });
+    this.scheduleFrameThumbs();
   }
 
   // ── StrokeSink (called by PointerInput) ─────────────────────────────────────
 
   begin(s: InputSample, opts: { pointerType: string; eraser: boolean; barrel: boolean }) {
+    if (this.playStart !== null || this.preparing) return this.setPlaying(false); // a tap stops it
     if (this.eyedropperArmed || opts.barrel) return this.startPick(s.x, s.y);
     if (this.pending) this.renderNow(); // pen lifted and touched down within one frame
     if (this.lost) return;
@@ -945,6 +1281,8 @@ export class Engine implements StrokeSink {
     };
     this.recorder?.begin(s, this.tool, opts);
     this.hoverSample = null;
+    this.penAt = s;
+    this.strokePointer = opts.pointerType;
     this.queue.push(s);
     this.requestFrame();
   }
@@ -957,6 +1295,7 @@ export class Engine implements StrokeSink {
     }
     if (!this.stroke || this.pending) return;
     this.recorder?.extend(samples);
+    if (last) this.penAt = last;
     for (const s of samples) this.queue.push(s);
     this.requestFrame();
   }
@@ -976,6 +1315,8 @@ export class Engine implements StrokeSink {
     if (!this.stroke || this.pending) return;
     this.recorder?.end('commit');
     this.pending = 'commit';
+    // A mouse lifted without moving gets no hover event; keep the outline where it is.
+    if (this.cursorOutline && this.strokePointer !== 'touch') this.hoverSample = this.penAt;
     this.requestFrame();
   }
 
@@ -1014,6 +1355,21 @@ export class Engine implements StrokeSink {
   private renderNow() {
     cancelAnimationFrame(this.raf);
     this.frame();
+  }
+
+  /**
+   * Renders the composite as the document looks (background included, no onion skin) without
+   * touching the screen, for code that reads it. The onion-skin view comes back next frame.
+   */
+  private renderPlain() {
+    const onion = this.composedWithoutBg;
+    this.plainComposite = true;
+    try {
+      this.renderNow();
+    } finally {
+      this.plainComposite = false;
+    }
+    if (onion) this.markDirty('all');
   }
 
   private frame = () => {
@@ -1098,6 +1454,21 @@ export class Engine implements StrokeSink {
     }
     const live = this.stroke;
 
+    // Playback shows cached frame previews, timed by their holds, and nothing else.
+    if (!this.plainComposite && (this.playStart !== null || this.preparing)) {
+      this.presentPlayback(doc);
+      return;
+    }
+
+    // The onion skin goes between the background and the layers, so with it the layers are
+    // composited without the background, which the presenter puts underneath instead.
+    const onion = this.plainComposite ? null : this.onionTexture(doc);
+    if ((onion !== null) !== this.composedWithoutBg) {
+      this.composedWithoutBg = onion !== null;
+      this.compositor.invalidate();
+      this.docDirty = 'all';
+    }
+
     // 3. Recomposite whatever changed in the document, with an adjustment's preview in place of
     //    its layer.
     const adjustment = this.adjustment?.layerId === doc.activeLayerId ? this.adjustment : null;
@@ -1112,7 +1483,7 @@ export class Engine implements StrokeSink {
         this.compositor.render(
           this.gpuLayers(doc),
           activeIndex(doc),
-          backgroundColor(doc),
+          onion ? null : backgroundColor(doc),
           live && showStroke ? this.liveStroke(live) : null,
           rect,
           adjustment?.out ?? null,
@@ -1120,20 +1491,25 @@ export class Engine implements StrokeSink {
       }
       this.docDirty = null;
     }
+    if (this.plainComposite) {
+      // Only the composite was wanted (export, eyedropper): the screen keeps its onion skin.
+      if (this.captures.size > 0) this.requestFrame();
+      return;
+    }
 
     // 4. Present the document through the view transform.
     const dpr = devicePixelRatio || 1;
-    const docToClip = toMat3(
-      multiply(viewToClip(this.viewW, this.viewH), this.view.docToView),
-      this.screenClip,
-    );
+    const docToClip = this.docToClip();
     this.presenter.draw({
       image: this.compositor.output,
       docToClip,
+      docSize: [this.docW, this.docH],
       surround: SURROUND,
       nearest: this.view.scale * dpr >= 3,
       width: this.canvas.width,
       height: this.canvas.height,
+      background: onion ? backgroundRgb(doc) : null,
+      underlay: onion,
     });
 
     // 5. Screen-only overlays, gone next frame: the not-yet-committed tail of the stroke plus
@@ -1158,7 +1534,23 @@ export class Engine implements StrokeSink {
         preset: live.preset,
       });
     }
-    if (this.hoverSample && !live) {
+    if (this.cursorOutline) {
+      const at = this.hoverSample ?? (live && this.strokePointer !== 'touch' ? this.penAt : null);
+      if (at && !this.picking && !this.panPointer && !this.spaceHeld) {
+        const radius =
+          this.cursorSize === 'brush' ? this.tool.size / 2 : (this.cursorSize / 2) * screenAA;
+        overlay.clear();
+        overlay.push(at.x, at.y, Math.max(radius, OUTLINE_MIN_RADIUS * screenAA), 1);
+        this.dabs.draw(overlay, {
+          docToClip,
+          color: OUTLINE_DARK,
+          color2: OUTLINE_LIGHT,
+          aa: screenAA,
+          ring: true,
+          dashed: true,
+        });
+      }
+    } else if (this.hoverSample && !live) {
       overlay.clear();
       overlay.push(this.hoverSample.x, this.hoverSample.y, this.tool.size / 2, 1);
       this.dabs.draw(overlay, { docToClip, color: CURSOR_RING, aa: screenAA, ring: true });
@@ -1180,6 +1572,54 @@ export class Engine implements StrokeSink {
     if (rotation !== viewStore.getState().rotation) viewStore.setState({ rotation });
     if (this.captures.size > 0) this.requestFrame(); // keep polling the GPU readbacks
   };
+
+  private docToClip(): Float32Array {
+    return toMat3(
+      multiply(viewToClip(this.viewW, this.viewH), this.view.docToView),
+      this.screenClip,
+    );
+  }
+
+  private onionTexture(doc: DocumentState): Target | null {
+    if (!doc.animation.enabled || !this.onion.enabled || doc.frames.length < 2) return null;
+    return this.animator.onionTexture(doc, this.onion);
+  }
+
+  /** One playback frame: prepares previews first (a little per frame), then plays them. */
+  private presentPlayback(doc: DocumentState) {
+    if (this.preparing) {
+      const done = this.animator.cacheSome(doc, 12);
+      if (done) {
+        this.preparing = false;
+        this.playStart = performance.now();
+        animationStore.setState({ preparing: null });
+      } else {
+        animationStore.setState({
+          preparing: this.animator.cachedCount(doc) / Math.max(1, doc.frames.length),
+        });
+      }
+    }
+    let frame = doc.frames[frameIndex(doc)];
+    if (this.playStart !== null) {
+      const tick = ((performance.now() - this.playStart) * doc.animation.fps) / 1000;
+      const holds = doc.frames.map((f) => f.hold);
+      frame = doc.frames[frameAtTick(holds, tick)] ?? frame;
+    }
+    if (frame) {
+      const dpr = devicePixelRatio || 1;
+      this.presenter.draw({
+        image: this.animator.preview(doc, frame.id),
+        docToClip: this.docToClip(),
+        docSize: [this.docW, this.docH],
+        surround: SURROUND,
+        nearest: this.view.scale * dpr >= 3,
+        width: this.canvas.width,
+        height: this.canvas.height,
+        background: backgroundRgb(doc),
+      });
+    }
+    this.requestFrame();
+  }
 
   private feed(stroke: Stroke, s: InputSample, sink: (pt: Pt) => void) {
     stroke.dabs.setTilt(s.altitude, s.azimuth);
@@ -1236,22 +1676,41 @@ export class Engine implements StrokeSink {
     return out;
   }
 
-  /** Creates textures for new layers and frees those of removed ones. */
+  /**
+   * Keeps one texture per layer of the active frame. Layers that leave it but still belong to
+   * another frame are parked on the CPU (read back only if painted since their upload); layers
+   * that enter it are uploaded from their parked tiles, or start empty.
+   */
   private syncLayers(doc: DocumentState) {
     const ids = new Set(doc.layers.map((l) => l.id));
+    const everywhere = allLayerIds(doc);
+    let parkedAny = false;
     for (const [id, target] of this.layers) {
-      if (!ids.has(id)) {
-        deleteTarget(this.gl, target);
-        this.layers.delete(id);
+      if (ids.has(id)) continue;
+      if (everywhere.has(id)) {
+        if (!this.lost && (this.changedSinceUpload.has(id) || !this.parked.has(id))) {
+          this.parked.setRaw(id, this.tileIO.readAll(target));
+        }
+        parkedAny = true;
+      } else {
+        this.parked.delete(id); // history holds its pixels
       }
+      this.changedSinceUpload.delete(id);
+      if (!this.lost) deleteTarget(this.gl, target);
+      this.layers.delete(id);
     }
+    for (const id of this.parked.ids()) if (!everywhere.has(id)) this.parked.delete(id);
     const fresh: string[] = [];
     for (const id of ids) {
       if (!this.layers.has(id)) {
-        this.layers.set(id, createTarget(this.gl, this.docW, this.docH));
+        const target = createTarget(this.gl, this.docW, this.docH);
+        const tiles = this.parked.raw(id);
+        if (tiles) this.tileIO.write(target, tiles);
+        this.layers.set(id, target);
         fresh.push(id);
       }
     }
+    if (parkedAny) this.scheduleParkedCompression();
     this.markThumbs(fresh.concat([...ids].filter((id) => !thumbnailStore.getState().urls[id])));
     engineStats.layers = this.layers.size;
     const layerMB = (this.docW * this.docH * 4) / (1024 * 1024);
@@ -1271,11 +1730,17 @@ export class Engine implements StrokeSink {
       this.suppressRecord === 0 &&
       (doc.layers !== prev.layers ||
         doc.groups !== prev.groups ||
-        doc.background !== prev.background)
+        doc.background !== prev.background ||
+        doc.frames !== prev.frames ||
+        doc.animation !== prev.animation)
     ) {
       this.recordDocChange(prev, doc);
     }
-    if (doc.layers !== prev.layers) this.syncLayers(doc);
+    if (doc.layers !== prev.layers || doc.parked !== prev.parked) {
+      // A stroke's tiles must be in before its layer can be parked.
+      for (const entry of [...this.captures.keys()]) entry.pending?.();
+      this.syncLayers(doc);
+    }
     if (
       doc.layers !== prev.layers ||
       doc.groups !== prev.groups ||
@@ -1285,11 +1750,82 @@ export class Engine implements StrokeSink {
       this.compositor.invalidate();
       this.markDirty('all');
     }
+    this.trackFrameVersions(doc, prev);
   };
+
+  /** Bumps the versions of frames whose look changed, so previews and thumbnails are redrawn. */
+  private trackFrameVersions(doc: DocumentState, prev: DocumentState) {
+    if (doc.frames !== prev.frames) {
+      this.animator.prune(new Set(doc.frames.map((f) => f.id)));
+      const thumbs = { ...animationStore.getState().thumbs };
+      for (const id of Object.keys(thumbs))
+        if (!doc.frames.some((f) => f.id === id)) delete thumbs[id];
+      animationStore.setState({ thumbs });
+    }
+    if (doc.background !== prev.background) {
+      this.animator.bumpAll();
+      this.scheduleFrameThumbs();
+    } else if (
+      doc.activeFrameId === prev.activeFrameId &&
+      (doc.layers !== prev.layers || doc.groups !== prev.groups)
+    ) {
+      this.frameChanged(doc.activeFrameId);
+    }
+    for (const [id, stack] of Object.entries(doc.parked)) {
+      const before = prev.parked[id];
+      if (before && before !== stack) this.frameChanged(id);
+    }
+    if (doc.activeFrameId !== prev.activeFrameId || doc.frames !== prev.frames) {
+      this.markDirty('all'); // onion neighbours
+    }
+    if (doc.animation.enabled && !prev.animation.enabled) this.scheduleFrameThumbs();
+    if (!doc.animation.enabled && this.playStart !== null) this.setPlaying(false);
+  }
+
+  private frameChanged(frameId: string) {
+    this.animator.bump(frameId);
+    this.scheduleFrameThumbs();
+    if (frameId !== documentStore.getState().activeFrameId) this.markDirty('all'); // onion
+  }
+
+  private scheduleFrameThumbs(delay = THUMBNAIL_DELAY_MS) {
+    clearTimeout(this.frameThumbTimer);
+    this.frameThumbTimer = setTimeout(this.renderFrameThumbs, delay);
+  }
+
+  /** Redraws stale timeline thumbnails a few at a time, between strokes. */
+  private renderFrameThumbs = () => {
+    if (this.disposed || this.lost) return;
+    const doc = documentStore.getState();
+    if (!doc.animation.enabled) return;
+    if (this.stroke || this.loading || this.playStart !== null || this.preparing) {
+      return this.scheduleFrameThumbs();
+    }
+    const start = performance.now();
+    const thumbs: Record<string, string> = {};
+    let more = true;
+    while (performance.now() - start < 12) {
+      const next = this.animator.nextThumbnail(doc, this.backgroundRgb255(doc));
+      if (!next) {
+        more = false;
+        break;
+      }
+      thumbs[next.id] = next.url;
+    }
+    if (Object.keys(thumbs).length > 0) {
+      animationStore.setState({ thumbs: { ...animationStore.getState().thumbs, ...thumbs } });
+    }
+    if (more) this.scheduleFrameThumbs(16);
+  };
+
+  private backgroundRgb255(doc: DocumentState): number[] | null {
+    return doc.background.visible ? parseHexColor(doc.background.color).map((v) => v * 255) : null;
+  }
 
   // ── History ─────────────────────────────────────────────────────────────────
 
   private pushHistory(entry: HistoryEntry) {
+    entry.frameId ??= documentStore.getState().activeFrameId;
     for (const [layerId, tiles] of entry.pixels) this.trackTiles(layerId, tiles);
     this.history.push(entry);
     this.opts.onChange?.();
@@ -1317,11 +1853,9 @@ export class Engine implements StrokeSink {
     const { label, coalesceKey } = describeChange(prev, doc);
     if (!label) return; // selection only
     const pixels = new Map<string, LayerTiles>();
-    for (const l of prev.layers) {
-      const target = this.layers.get(l.id);
-      if (target && !doc.layers.some((n) => n.id === l.id)) {
-        pixels.set(l.id, TileIO.diff(this.tileIO.readAll(target), new Map()));
-      }
+    const remaining = allLayerIds(doc);
+    for (const l of allLayers(prev)) {
+      if (!remaining.has(l.id)) pixels.set(l.id, this.removalTiles(l.id));
     }
     this.pushHistory({
       label,
@@ -1357,13 +1891,25 @@ export class Engine implements StrokeSink {
     if (this.disposed || this.lost || peek() !== entry || this.stroke) return;
 
     const doc = entry.doc?.[side];
-    if (doc)
-      this.withoutRecording(() =>
-        documentStore.setState({ ...doc, layers: [...doc.layers], groups: [...doc.groups] }),
-      );
+    const current = documentStore.getState();
+    this.withoutRecording(() => {
+      if (doc) {
+        documentStore.setState({
+          ...doc,
+          layers: [...doc.layers],
+          groups: [...doc.groups],
+          frames: [...doc.frames],
+        });
+      } else if (entry.frameId && entry.frameId !== current.activeFrameId) {
+        current.selectFrame(entry.frameId); // show the frame the step changes
+      }
+    });
+    const present = allLayerIds(documentStore.getState());
     for (const [layerId, tiles] of writes) {
       const target = this.layers.get(layerId);
       if (target) this.tileIO.write(target, tiles);
+      else if (present.has(layerId)) this.parked.write(layerId, tiles);
+      else continue;
       this.trackUnsaved(layerId, tiles);
     }
     if (direction === 'undo') this.history.stepBack();
@@ -1385,6 +1931,9 @@ export class Engine implements StrokeSink {
 
   private trackUnsaved(layerId: string, tiles: ReadonlyMap<number, TileData>) {
     if (tiles.size === 0) return;
+    if (this.layers.has(layerId)) this.changedSinceUpload.add(layerId);
+    const frame = frameOfLayer(documentStore.getState(), layerId);
+    if (frame) this.frameChanged(frame);
     let layer = this.unsaved.get(layerId);
     if (!layer) this.unsaved.set(layerId, (layer = new Map()));
     for (const [key, data] of tiles) layer.set(key, data);
@@ -1423,10 +1972,10 @@ export class Engine implements StrokeSink {
     engineStats.historyMB = h.totalBytes / (1024 * 1024);
   };
 
-  private withoutRecording(fn: () => void) {
+  private withoutRecording<T>(fn: () => T): T {
     this.suppressRecord++;
     try {
-      fn();
+      return fn();
     } finally {
       this.suppressRecord--;
     }
@@ -1459,7 +2008,7 @@ export class Engine implements StrokeSink {
     const px = Math.floor(x);
     const py = Math.floor(y);
     if (px < 0 || py < 0 || px >= this.docW || py >= this.docH) return null;
-    if (this.docDirty) this.renderNow();
+    if (this.docDirty || this.composedWithoutBg) this.renderPlain();
     const gl = this.gl;
     const data = new Uint8Array(4);
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.compositor.output.fbo);
@@ -1504,9 +2053,17 @@ export class Engine implements StrokeSink {
   private onSpace = (e: KeyboardEvent) => {
     if (e.code !== 'Space' || isEditable(e.target)) return;
     e.preventDefault(); // no page scroll, no button activation
-    this.spaceHeld = e.type === 'keydown';
-    if (!this.panPointer) this.canvas.style.cursor = this.spaceHeld ? 'grab' : '';
+    const held = e.type === 'keydown';
+    if (held === this.spaceHeld) return; // key repeat
+    this.spaceHeld = held;
+    if (!this.panPointer) this.canvas.style.cursor = held ? 'grab' : this.baseCursor();
+    if (this.cursorOutline) this.requestFrame(); // the outline gives way to the grab hand
   };
+
+  /** The pointer over the canvas when not panning: none while the dashed outline stands in. */
+  private baseCursor() {
+    return this.cursorOutline ? 'none' : '';
+  }
 
   private onPanDown = (e: PointerEvent) => {
     const pan =
@@ -1534,7 +2091,8 @@ export class Engine implements StrokeSink {
     if (!this.panPointer || e.pointerId !== this.panPointer.id) return;
     e.stopImmediatePropagation();
     this.panPointer = null;
-    this.canvas.style.cursor = this.spaceHeld ? 'grab' : '';
+    this.canvas.style.cursor = this.spaceHeld ? 'grab' : this.baseCursor();
+    if (this.cursorOutline) this.requestFrame();
   };
 
   private notice(message: string) {
@@ -1568,13 +2126,17 @@ export class Engine implements StrokeSink {
       return;
     }
     e.preventDefault();
-    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.viewH : 1;
-    const rect = this.canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    // Ctrl+wheel is also what a Chromium trackpad pinch sends.
-    if (e.ctrlKey || e.metaKey) this.view.zoomAt(Math.exp(-e.deltaY * unit * 0.01), x, y);
-    else this.view.panBy(-e.deltaX * unit, -e.deltaY * unit);
+    const intent = this.wheel.classify(
+      e,
+      { wheel: this.wheelAction, zoomStep: this.keyZoom },
+      this.viewH,
+    );
+    if (intent.kind === 'zoom') {
+      const rect = this.canvas.getBoundingClientRect();
+      this.view.zoomAt(intent.factor, e.clientX - rect.left, e.clientY - rect.top);
+    } else {
+      this.view.panBy(intent.dx, intent.dy);
+    }
     this.requestFrame();
   };
 
@@ -1634,6 +2196,10 @@ export class Engine implements StrokeSink {
     }
     this.captures.clear();
     if (this.adjustment) this.endAdjustment(); // its texture died with the context
+    this.changedSinceUpload.clear(); // storage has the latest; it's reloaded from there
+    this.playStart = null;
+    this.preparing = false;
+    animationStore.setState({ playing: false, preparing: null });
     engineStats.contextLosses++;
     this.opts.onContextLost?.();
   };
@@ -1668,9 +2234,34 @@ export class Engine implements StrokeSink {
 
 const toPt = (s: InputSample): Pt => ({ x: s.x, y: s.y, p: s.pressure });
 
+/** FNV-1a hash of a target's pixels (tests). */
+function hashTarget(gl: WebGL2RenderingContext, t: Target): string {
+  const data = new Uint8Array(t.w * t.h * 4);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, t.fbo);
+  gl.readPixels(0, 0, t.w, t.h, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+  const words = new Uint32Array(data.buffer);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < words.length; i++) h = Math.imul(h ^ (words[i] ?? 0), 0x01000193);
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+/** Tiles without the transparent (null) ones. */
+function nonEmpty(tiles: ReadonlyMap<number, Uint8Array | null>): Map<number, Uint8Array> {
+  const out = new Map<number, Uint8Array>();
+  for (const [key, t] of tiles) if (t) out.set(key, t);
+  return out;
+}
+
 /** View CSS px (y down) → clip space of the default framebuffer (y up). */
 function viewToClip(w: number, h: number): Affine {
   return { a: 2 / w, b: 0, c: 0, d: -2 / h, e: -1, f: 1 };
+}
+
+function backgroundRgb(doc: DocumentState): [number, number, number] | null {
+  if (!doc.background.visible) return null;
+  const [r, g, b] = parseHexColor(doc.background.color);
+  return [r, g, b];
 }
 
 function backgroundColor(doc: DocumentState): Rgba | null {
@@ -1685,6 +2276,10 @@ function snapshot(doc: DocumentState): DocSnapshot {
     groups: doc.groups,
     activeLayerId: doc.activeLayerId,
     background: doc.background,
+    frames: doc.frames,
+    activeFrameId: doc.activeFrameId,
+    parked: doc.parked,
+    animation: doc.animation,
   };
 }
 
@@ -1747,11 +2342,34 @@ function movedWholeGroup(prev: DocumentState, doc: DocumentState): boolean {
 const changedKeys = <T extends object>(a: T, b: T) =>
   (Object.keys(b) as (keyof T)[]).filter((k) => a[k] !== b[k]);
 
+/** Frames added, removed, moved or retimed, animation settings, or a frame switch (not an edit). */
+function describeFrameChange(
+  prev: DocumentState,
+  doc: DocumentState,
+): { label: string | null; coalesceKey?: string } | null {
+  if (doc.animation !== prev.animation) {
+    if (doc.animation.enabled !== prev.animation.enabled) {
+      return { label: doc.animation.enabled ? 'Animation on' : 'Animation off' };
+    }
+    return { label: 'Frame rate', coalesceKey: 'fps' };
+  }
+  if (doc.frames === prev.frames) {
+    return doc.activeFrameId !== prev.activeFrameId ? { label: null } : null;
+  }
+  if (doc.frames.length > prev.frames.length) return { label: 'New frame' };
+  if (doc.frames.length < prev.frames.length) return { label: 'Delete frame' };
+  if (doc.frames.some((f, i) => f.id !== prev.frames[i]?.id)) return { label: 'Move frame' };
+  const changed = doc.frames.find((f, i) => f !== prev.frames[i]);
+  return { label: 'Frame timing', coalesceKey: changed ? `hold:${changed.id}` : undefined };
+}
+
 /** A label for the change, and a key when repeats should merge (slider drags). */
 function describeChange(
   prev: DocumentState,
   doc: DocumentState,
 ): { label: string | null; coalesceKey?: string } {
+  const frame = describeFrameChange(prev, doc);
+  if (frame) return frame;
   if (doc.background !== prev.background) {
     const fields = changedKeys(prev.background, doc.background);
     const key = fields.join() === 'color' ? 'background:color' : undefined;

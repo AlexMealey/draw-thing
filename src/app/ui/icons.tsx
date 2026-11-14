@@ -158,3 +158,48 @@ export const PinIcon = (props: SVGProps<SVGSVGElement>) => (
     <path d="M12 12v8" />
   </Icon>
 );
+
+export const PlayIcon = () => (
+  <Icon>
+    <path d="M8 5.5v13l10.5-6.5z" fill="currentColor" />
+  </Icon>
+);
+
+export const PauseIcon = () => (
+  <Icon>
+    <rect x="6.5" y="5.5" width="3.5" height="13" rx="1" fill="currentColor" />
+    <rect x="14" y="5.5" width="3.5" height="13" rx="1" fill="currentColor" />
+  </Icon>
+);
+
+/** Stacked, offset frames: onion skin. */
+export const OnionIcon = () => (
+  <Icon>
+    <rect x="3.5" y="7.5" width="10" height="10" rx="2" opacity="0.45" />
+    <rect x="10.5" y="6.5" width="10" height="10" rx="2" opacity="0.45" />
+    <rect x="7" y="4" width="10" height="10" rx="2" />
+  </Icon>
+);
+
+/** Animation: a strip of film. */
+export const FilmIcon = () => (
+  <Icon>
+    <rect x="4" y="3.5" width="16" height="17" rx="2" />
+    <path d="M8 3.5v17M16 3.5v17M4 8h4M4 12h4M4 16h4M16 8h4M16 12h4M16 16h4" />
+  </Icon>
+);
+
+/** Copy the current frame. */
+export const CloneIcon = () => (
+  <Icon>
+    <rect x="8.5" y="8.5" width="11" height="11" rx="2" />
+    <path d="M15.5 8.5v-2a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2" />
+    <path d="M14 11.5v5M11.5 14h5" />
+  </Icon>
+);
+
+export const TrashIcon = () => (
+  <Icon>
+    <path d="M4.5 7h15M10 4.5h4M6.5 7l1 12.5h9l1-12.5M10 10.5v6M14 10.5v6" />
+  </Icon>
+);

@@ -29,6 +29,7 @@ export interface BrushPreset {
   };
   size: {
     default: number;
+    /** No longer a limit: every brush goes up to the canvas's shorter side (maxBrushSize). */
     max: number;
     /** Diameter at zero pressure as a fraction of full size. */
     minRatio: number;

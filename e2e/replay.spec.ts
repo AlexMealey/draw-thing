@@ -43,3 +43,26 @@ for (const scene of [...REGRESSION_SCENES, ...recordedScenes()]) {
     expect(errors).toEqual([]);
   });
 }
+
+// Gaussian blur over the ink scene's hard edges. Large radii blur a downsampled copy of the
+// layer: the result must stay smooth, without the repeated copies that spaced-out taps leave.
+for (const radius of [8, 40, 150, 400]) {
+  test(`gaussian blur ${radius} px matches its reference image`, async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    const scene = REGRESSION_SCENES.find((s) => s.name === 'ink-pressure')!;
+    await page.setViewportSize({ width: 900, height: 700 });
+    await openLab(page, scene.doc.w, scene.doc.h);
+    await page.evaluate((s) => window.__lab!.playScene(s), scene);
+    await page.evaluate((r) => {
+      const e = window.__lab!.engine;
+      e.beginAdjustment('gaussian');
+      e.setAdjustment({ radius: r });
+      e.applyAdjustment();
+      return e.whenIdle();
+    }, radius);
+    const png = Buffer.from(await page.evaluate(() => window.__lab!.png()), 'base64');
+    expect(png).toMatchSnapshot(`gaussian-${radius}.png`, { threshold: 0.02, maxDiffPixels: 4 });
+    expect(errors).toEqual([]);
+  });
+}

@@ -1,4 +1,5 @@
 import { type KeyboardEvent, type PointerEvent, useRef, useState } from 'react';
+import type { Modifiers } from './sliderStep';
 import styles from './VerticalSlider.module.css';
 
 interface Props {
@@ -6,7 +7,8 @@ interface Props {
   /** 0..1 position along the track (callers map their own scale). */
   position: number;
   display: string;
-  onChange: (position: number) => void;
+  /** `mods`: Shift/Alt held, so callers can snap to coarse steps in their own units. */
+  onChange: (position: number, mods: Modifiers) => void;
   /** Which side the value bubble opens to. */
   bubbleSide?: 'left' | 'right';
 }
@@ -26,13 +28,13 @@ export function VerticalSlider({
   const fromPointer = (e: PointerEvent) => {
     const r = ref.current?.getBoundingClientRect();
     if (!r) return;
-    onChange(Math.min(1, Math.max(0, 1 - (e.clientY - r.top) / r.height)));
+    onChange(Math.min(1, Math.max(0, 1 - (e.clientY - r.top) / r.height)), e);
   };
 
   const onKey = (e: KeyboardEvent) => {
     const step = e.shiftKey ? 0.1 : 0.02;
-    if (e.key === 'ArrowUp' || e.key === 'ArrowRight') onChange(Math.min(1, p + step));
-    else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') onChange(Math.max(0, p - step));
+    if (e.key === 'ArrowUp' || e.key === 'ArrowRight') onChange(Math.min(1, p + step), e);
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') onChange(Math.max(0, p - step), e);
     else return;
     e.preventDefault();
   };

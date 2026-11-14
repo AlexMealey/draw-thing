@@ -1,0 +1,116 @@
+.timeline {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--safe-bottom) + var(--timeline-h, 76px));
+  padding: 0 calc(var(--safe-right) + var(--space-2)) var(--safe-bottom)
+    calc(var(--safe-left) + var(--space-2));
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: rgb(28 28 30 / 0.88);
+  border-top: 1px solid var(--color-panel-border);
+  z-index: 15;
+}
+
+.frames {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  margin: 0;
+  padding: 0 var(--space-1);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  touch-action: pan-x;
+}
+
+.cell {
+  flex: none;
+  position: relative;
+}
+
+.cell[data-dragging='true'] {
+  z-index: 1;
+  opacity: 0.85;
+}
+
+.frame {
+  position: relative;
+  display: block;
+  width: var(--cell-w, 64px);
+  height: 50px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgb(255 255 255 / 0.06);
+  cursor: pointer;
+  touch-action: pan-x;
+  -webkit-user-drag: none;
+}
+
+.frame[aria-current='true'] {
+  border-color: var(--color-accent);
+}
+
+.frame:disabled {
+  cursor: default;
+}
+
+.frame img,
+.frame > span:first-child {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.number,
+.hold {
+  position: absolute;
+  bottom: 2px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 15px;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  background: rgb(0 0 0 / 0.55);
+  pointer-events: none;
+}
+
+.number {
+  left: 2px;
+}
+
+.hold {
+  right: 2px;
+}
+
+.buttons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.status {
+  flex: none;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Phones: fewer buttons fit; the settings panel has the rest. */
+@media (max-width: 480px) {
+  .buttons > button:nth-child(3) {
+    display: none;
+  }
+}

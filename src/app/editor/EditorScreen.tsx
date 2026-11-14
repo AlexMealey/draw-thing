@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Engine } from '../../engine/Engine';
+import { documentStore, useDocument } from '../../state/documentStore';
 import {
   currentAdjustments,
-  currentPreset,
+  maxBrushSize,
   toolSettings,
   toolStore,
   useTools,
@@ -11,6 +12,7 @@ import { CanvasViewport } from '../CanvasViewport';
 import type { OpenProject, Session } from '../project';
 import { ActionsPanel } from './ActionsPanel';
 import { AdjustmentsPanel } from './AdjustmentsPanel';
+import { AnimationPanel, FramePanel } from './AnimationPanels';
 import { ArrowRotation } from './arrowRotation';
 import { SharePanel } from './SharePanel';
 import { BrushLibrary } from './BrushLibrary';
@@ -21,6 +23,7 @@ import { LayersPanel } from './LayersPanel';
 import { PaletteManager } from './PaletteManager';
 import { RotationPill } from './RotationPill';
 import { SideBar } from './SideBar';
+import { Timeline, TIMELINE_H } from './Timeline';
 import { TopBar } from './TopBar';
 
 /** Room taken by the top bar and sidebar, so fitting keeps the canvas out from under them. */
@@ -28,7 +31,15 @@ const TOPBAR = 60;
 const SIDEBAR = 64;
 
 export type PanelId =
-  'brushes' | 'brushSettings' | 'layers' | 'color' | 'actions' | 'share' | 'adjustments';
+  | 'brushes'
+  | 'brushSettings'
+  | 'layers'
+  | 'color'
+  | 'actions'
+  | 'share'
+  | 'adjustments'
+  | 'frame'
+  | 'animation';
 
 interface Props {
   project: OpenProject;
@@ -83,6 +94,12 @@ export function EditorScreen({
   const fingerDrawing = useTools((s) => s.fingerDrawing);
   const snapRotation = useTools((s) => s.snapRotation);
   const keyZoom = useTools((s) => s.keyZoomStep);
+  const wheel = useTools((s) => s.wheel);
+  const cursorOutline = useTools((s) => s.cursorOutline);
+  const cursorOutlineSize = useTools((s) => s.cursorOutlineSize);
+  const cursorOutlineFixed = useTools((s) => s.cursorOutlineFixed);
+  const onion = useTools((s) => s.onion);
+  const animation = useDocument((s) => s.animation.enabled);
   const tool = useMemo(
     () => toolSettings({ ...toolStore.getState(), mode, color, presetIds, adjustments, overrides }),
     [mode, color, presetIds, adjustments, overrides],
@@ -117,12 +134,23 @@ export function EditorScreen({
   }, [engine, fingerDrawing]);
 
   useEffect(() => {
-    engine()?.setViewPrefs({ snapRotation, keyZoom });
-  }, [engine, snapRotation, keyZoom]);
+    engine()?.setViewPrefs({ snapRotation, keyZoom, wheel });
+  }, [engine, snapRotation, keyZoom, wheel]);
+
+  useEffect(() => {
+    engine()?.setCursorPrefs({
+      outline: cursorOutline,
+      size: cursorOutlineSize === 'brush' ? 'brush' : cursorOutlineFixed,
+    });
+  }, [engine, cursorOutline, cursorOutlineSize, cursorOutlineFixed]);
 
   useEffect(() => {
     engine()?.setEyedropper(eyedropper);
   }, [engine, eyedropper]);
+
+  useEffect(() => {
+    engine()?.setOnion(onion);
+  }, [engine, onion]);
 
   // Keyboard shortcuts (Ctrl/⌘ combinations are handled by the engine).
   useEffect(() => {
@@ -134,7 +162,8 @@ export function EditorScreen({
       if (e.ctrlKey || e.metaKey || e.altKey || isTyping(e.target)) return;
       const tools = toolStore.getState();
       const size = currentAdjustments(tools).size;
-      const max = currentPreset(tools).size.max;
+      const { width, height } = documentStore.getState();
+      const max = maxBrushSize(width, height);
       const step = 1 + tools.sizeStep;
       switch (e.key) {
         case 'b':
@@ -165,6 +194,17 @@ export function EditorScreen({
           // Holding turns continuously (ArrowRotation), so key-repeat is ignored.
           if (!e.repeat) rotation.press(e.key === 'ArrowLeft' ? -1 : 1);
           break;
+        case ',':
+        case '.':
+          if (!documentStore.getState().animation.enabled) return;
+          engine()?.stepFrame(e.key === ',' ? -1 : 1);
+          break;
+        case '/': {
+          const e2 = engine();
+          if (!documentStore.getState().animation.enabled || !e2) return;
+          e2.setPlaying(!e2.playing);
+          break;
+        }
         case 'Escape':
           setOpen(null);
           setEyedropper(false);
@@ -193,6 +233,21 @@ export function EditorScreen({
 
   const close = () => setOpen(null);
   const side = sidebarRight ? 'right' : 'left';
+  const timeline = animation && !uiHidden;
+
+  // Room the timeline takes at the bottom, for everything fixed there (sheets, sidebar, prompts).
+  useEffect(() => {
+    if (!timeline) return;
+    const root = document.documentElement.style;
+    root.setProperty('--timeline-h', `${TIMELINE_H}px`);
+    root.setProperty('--timeline-space', `calc(var(--safe-bottom) + ${TIMELINE_H}px)`);
+    root.setProperty('--sheet-safe', '0px');
+    return () => {
+      root.removeProperty('--timeline-h');
+      root.removeProperty('--timeline-space');
+      root.removeProperty('--sheet-safe');
+    };
+  }, [timeline]);
   const insets = useMemo(
     () =>
       uiHidden
@@ -200,10 +255,10 @@ export function EditorScreen({
         : {
             top: TOPBAR,
             right: sidebarRight ? SIDEBAR : 0,
-            bottom: 0,
+            bottom: animation ? TIMELINE_H + 4 : 0,
             left: sidebarRight ? 0 : SIDEBAR,
           },
-    [uiHidden, sidebarRight],
+    [uiHidden, sidebarRight, animation],
   );
 
   return (
@@ -303,6 +358,9 @@ export function EditorScreen({
               }}
             />
           )}
+          {timeline && <Timeline engine={engine} open={open} onToggle={toggle} />}
+          {animation && open === 'frame' && <FramePanel engine={engine} onClose={close} />}
+          {animation && open === 'animation' && <AnimationPanel onClose={close} />}
           {open === 'share' && (
             <SharePanel
               project={project}

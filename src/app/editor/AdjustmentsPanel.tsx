@@ -54,6 +54,7 @@ export function AdjustmentsPanel({ engine, onClose }: Props) {
     max: number,
     format: (v: number) => string,
     step = 0.01,
+    wide = false,
   ) => (
     <SliderRow
       label={label}
@@ -62,6 +63,7 @@ export function AdjustmentsPanel({ engine, onClose }: Props) {
       max={max}
       step={step}
       format={format}
+      wide={wide}
       onChange={(v) => set({ [key]: v })}
     />
   );
@@ -118,10 +120,10 @@ export function AdjustmentsPanel({ engine, onClose }: Props) {
               {slider('contrast', 'Contrast', -1, 1, signed)}
             </>
           )}
-          {kind === 'gaussian' && slider('radius', 'Radius', 0, MAX_BLUR_RADIUS, px, 0.5)}
+          {kind === 'gaussian' && slider('radius', 'Radius', 0, MAX_BLUR_RADIUS, px, 0.5, true)}
           {kind === 'motion' && (
             <>
-              {slider('distance', 'Distance', 0, MAX_MOTION_DISTANCE, px, 1)}
+              {slider('distance', 'Distance', 0, MAX_MOTION_DISTANCE, px, 1, true)}
               {slider('angle', 'Angle', 0, 180, deg, 1)}
             </>
           )}

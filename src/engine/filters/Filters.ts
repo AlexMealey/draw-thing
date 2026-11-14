@@ -1,5 +1,5 @@
 import { Program } from '../gl/program';
-import { ADJUST_FS, GAUSS_FS, MOTION_FS, QUAD_VS } from '../gl/shaders';
+import { ADJUST_FS, GAUSS_FS, MOTION_FS, QUAD_VS, REGION_VS } from '../gl/shaders';
 import { bindTarget, type Target } from '../gl/target';
 import { type QuadPass, targetClip } from '../render/QuadPass';
 
@@ -31,11 +31,39 @@ export const NEUTRAL_ADJUSTMENT: AdjustmentParams = {
   angle: 0,
 };
 
-export const MAX_BLUR_RADIUS = 100;
+export const MAX_BLUR_RADIUS = 400;
 export const MAX_MOTION_DISTANCE = 200;
-/** Gaussian taps per side; bigger radii space them out. */
-const MAX_TAPS = 48;
+/** Radius (px) one Gaussian pass covers directly; bigger radii blur a smaller copy of the layer. */
+const LEVEL_RADIUS = 24;
 const MOTION_SAMPLES = 64;
+
+export interface BlurPlan {
+  /** How many times the layer is halved before blurring (0 = full size). */
+  level: number;
+  /** In pixels of that level. */
+  sigma: number;
+  taps: number;
+}
+
+/**
+ * How to blur by `radius` px. Spacing taps out over a wide radius shows the image repeated, so
+ * big radii instead halve the layer until the radius is at most LEVEL_RADIUS there, blur that
+ * with every texel sampled, and scale the result back up (smooth, since it's blurred).
+ */
+export function blurPlan(radius: number): BlurPlan {
+  const r = Math.min(MAX_BLUR_RADIUS, Math.max(0, radius));
+  let level = 0;
+  while (r / 2 ** level > LEVEL_RADIUS) level++;
+  const scaled = r / 2 ** level;
+  return { level, sigma: Math.max(0.5, scaled / 3), taps: Math.max(1, Math.ceil(scaled)) };
+}
+
+/** A region at the origin of a target: a downsampled level of the image being blurred. */
+interface Region {
+  t: Target;
+  w: number;
+  h: number;
+}
 
 /** Whether these settings leave the layer as it is. */
 export function isNeutral(kind: AdjustmentKind, p: AdjustmentParams): boolean {
@@ -68,7 +96,7 @@ export class Filters {
     private quad: QuadPass,
   ) {
     this.adjust = new Program(gl, QUAD_VS, ADJUST_FS);
-    this.gauss = new Program(gl, QUAD_VS, GAUSS_FS);
+    this.gauss = new Program(gl, REGION_VS, GAUSS_FS);
     this.motion = new Program(gl, QUAD_VS, MOTION_FS);
   }
 
@@ -102,18 +130,9 @@ export class Filters {
           u_contrast: kind === 'brightnessContrast' ? contrastFactor(p.contrast) : 1,
         });
         return;
-      case 'gaussian': {
-        // The kernel reaches 3σ = radius; taps are spread out when that needs more than MAX_TAPS.
-        const radius = Math.min(MAX_BLUR_RADIUS, Math.max(0, p.radius));
-        const stride = Math.max(1, radius / MAX_TAPS);
-        const blur = {
-          u_sigma: Math.max(0.5, radius / 3 / stride),
-          u_taps: Math.max(1, Math.ceil(radius / stride)),
-        };
-        this.pass(src, temp, this.gauss, { ...mid, ...blur, u_step: [stride / src.w, 0] });
-        this.pass(temp, out, this.gauss, { ...last, ...blur, u_step: [0, stride / src.h] }, alpha);
+      case 'gaussian':
+        this.gaussian(blurPlan(p.radius), src, out, temp, alpha);
         break;
-      }
       case 'motion': {
         const distance = Math.min(MAX_MOTION_DISTANCE, Math.max(0, p.distance));
         const a = (p.angle * Math.PI) / 180;
@@ -132,6 +151,65 @@ export class Filters {
       }
     }
     this.clear(temp);
+  }
+
+  /**
+   * Levels live at the origin of `temp` and `out` (no extra GPU memory), alternating so that the
+   * smallest one, and its blur, end up in `temp`; the last pass scales it up into all of `out`.
+   */
+  private gaussian(plan: BlurPlan, src: Target, out: Target, temp: Target, alpha?: Target) {
+    const whole = (t: Target): Region => ({ t, w: src.w, h: src.h });
+    const blur = { sigma: plan.sigma, taps: plan.taps };
+    if (plan.level === 0) {
+      this.region(whole(src), whole(temp), { ...blur, dir: [1, 0] });
+      this.region(whole(temp), whole(out), { ...blur, dir: [0, 1] }, alpha);
+      return;
+    }
+    let from = whole(src);
+    for (let i = 1; i <= plan.level; i++) {
+      const to: Region = {
+        t: (plan.level - i) % 2 === 0 ? temp : out,
+        w: Math.ceil(from.w / 2),
+        h: Math.ceil(from.h / 2),
+      };
+      this.region(from, to, { sigma: 1, taps: 0, dir: [0, 0] }); // bilinear: averages 2×2
+      from = to;
+    }
+    const swap: Region = { ...from, t: out };
+    this.region(from, swap, { ...blur, dir: [1, 0] });
+    this.region(swap, from, { ...blur, dir: [0, 1] });
+    this.region(from, whole(out), { sigma: 1, taps: 0, dir: [0, 0] }, alpha);
+  }
+
+  private region(
+    from: Region,
+    to: Region,
+    blur: { sigma: number; taps: number; dir: [number, number] },
+    alpha?: Target,
+  ) {
+    const gl = this.gl;
+    const { t: src } = from;
+    bindTarget(gl, to.t, { x: 0, y: 0, w: to.w, h: to.h });
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, src.tex);
+    if (alpha) {
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, alpha.tex);
+      gl.activeTexture(gl.TEXTURE0);
+    }
+    this.gauss.use({
+      u_dstRegion: [to.w / to.t.w, to.h / to.t.h],
+      u_srcRegion: [from.w / src.w, from.h / src.h],
+      u_uvMin: [0.5 / src.w, 0.5 / src.h],
+      u_uvMax: [(from.w - 0.5) / src.w, (from.h - 0.5) / src.h],
+      u_step: [blur.dir[0] / src.w, blur.dir[1] / src.h],
+      u_sigma: blur.sigma,
+      u_taps: blur.taps,
+      u_src: 0,
+      u_keepAlpha: !!alpha,
+      u_alpha: 1,
+    });
+    this.quad.draw();
   }
 
   dispose() {

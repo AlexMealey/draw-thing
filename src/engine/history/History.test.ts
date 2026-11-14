@@ -7,6 +7,10 @@ const snap = (activeLayerId: string): DocSnapshot => ({
   groups: [],
   activeLayerId,
   background: { color: '#fff', visible: true },
+  frames: [{ id: 'f', hold: 1 }],
+  activeFrameId: 'f',
+  parked: {},
+  animation: { enabled: false, fps: 12 },
 });
 
 const pixels = (label: string, bytes: number, time = 0): HistoryEntry => ({

@@ -1,15 +1,17 @@
 import { createTarget, deleteTarget, type Target } from '../gl/target';
-import { imageToDataURL, readImage } from './readback';
+import { imageToDataURL, readImage, readPremultiplied } from './readback';
+import { fitWithin, Scaler } from './Scaler';
 
 /** Longest side of a layer thumbnail, px. */
 export const THUMB_SIZE = 96;
 
 /**
- * Layer thumbnails by repeated 2× linear downsampling (blits), which averages properly instead of
- * aliasing like a single big minification would. The chain is allocated once per document size.
+ * Small previews by repeated 2× linear downsampling (see Scaler). The chain is allocated once per
+ * source size.
  */
 export class Thumbnailer {
-  private chain: Target[] = [];
+  private scaler: Scaler;
+  private out: Target;
 
   constructor(
     private gl: WebGL2RenderingContext,
@@ -17,17 +19,9 @@ export class Thumbnailer {
     docH: number,
     size = THUMB_SIZE,
   ) {
-    const scale = Math.min(1, size / Math.max(docW, docH));
-    const tw = Math.max(1, Math.round(docW * scale));
-    const th = Math.max(1, Math.round(docH * scale));
-    let w = docW;
-    let h = docH;
-    while (w > tw * 2 || h > th * 2) {
-      w = Math.max(tw, Math.ceil(w / 2));
-      h = Math.max(th, Math.ceil(h / 2));
-      this.chain.push(createTarget(gl, w, h));
-    }
-    this.chain.push(createTarget(gl, tw, th));
+    const { w, h } = fitWithin(docW, docH, size);
+    this.scaler = new Scaler(gl, docW, docH, w, h);
+    this.out = createTarget(gl, w, h);
   }
 
   /** PNG data URL. */
@@ -35,21 +29,20 @@ export class Thumbnailer {
     return imageToDataURL(this.renderImage(src));
   }
 
+  /** Straight alpha. */
   renderImage(src: Target): ImageData {
-    const gl = this.gl;
-    gl.disable(gl.SCISSOR_TEST);
-    let prev = src;
-    for (const t of this.chain) {
-      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, prev.fbo);
-      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, t.fbo);
-      gl.blitFramebuffer(0, 0, prev.w, prev.h, 0, 0, t.w, t.h, gl.COLOR_BUFFER_BIT, gl.LINEAR);
-      prev = t;
-    }
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    return readImage(gl, prev);
+    this.scaler.run(src, this.out);
+    return readImage(this.gl, this.out);
+  }
+
+  /** Premultiplied RGBA8 bytes, with the size. */
+  renderPremultiplied(src: Target): { data: Uint8ClampedArray<ArrayBuffer>; w: number; h: number } {
+    this.scaler.run(src, this.out);
+    return { data: readPremultiplied(this.gl, this.out), w: this.out.w, h: this.out.h };
   }
 
   dispose() {
-    for (const t of this.chain) deleteTarget(this.gl, t);
+    this.scaler.dispose();
+    deleteTarget(this.gl, this.out);
   }
 }

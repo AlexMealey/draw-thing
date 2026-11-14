@@ -39,6 +39,8 @@ in float v_alpha;
 uniform vec4 u_color; // premultiplied
 uniform float u_aa;
 uniform bool u_ring;
+uniform bool u_dashed; // ring only: alternate u_color and u_color2 dashes, ~4 screen px each
+uniform vec4 u_color2; // premultiplied
 uniform float u_hardness;
 uniform float u_roundness;
 uniform sampler2D u_grain;
@@ -49,6 +51,15 @@ out vec4 o;
 void main() {
   if (u_ring) {
     float ring = clamp(1.0 - abs(length(v_local) - v_radius) / u_aa, 0.0, 1.0);
+    if (u_dashed) {
+      // u_aa is 1 screen px in document units, so this is the circumference in screen px.
+      float n = max(8.0, floor(6.2831853 * v_radius / u_aa / 8.0)); // whole dashes: seamless
+      float t = fract(atan(v_local.y, v_local.x) / 6.2831853 * n);
+      float edge = n * u_aa / (6.2831853 * v_radius); // 1 screen px in t units
+      float dash = smoothstep(0.5 - edge, 0.5, t) * (1.0 - smoothstep(1.0 - edge, 1.0, t));
+      o = mix(u_color, u_color2, dash) * ring;
+      return;
+    }
     o = u_color * ring;
     return;
   }
@@ -121,17 +132,46 @@ void main() {
   o = vec4(co, s.a + d.a * (1.0 - s.a));
 }`;
 
-/** The composited document → screen. Transparent areas (background hidden) show a checkerboard. */
+/**
+ * The composited document → screen. Under it: the background color when `u_hasBg` (the image was
+ * composited without it), else a checkerboard where it's transparent; then, when `u_hasUnder`, an
+ * underlay (onion skin) between the two.
+ */
 export const PRESENT_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_image;
+uniform sampler2D u_under;
+uniform bool u_hasUnder;
+uniform bool u_hasBg;
+uniform vec3 u_bg;
 out vec4 o;
 void main() {
   vec4 c = texture(u_image, v_uv);
   float k = mod(floor(gl_FragCoord.x / 12.0) + floor(gl_FragCoord.y / 12.0), 2.0);
-  vec3 checker = mix(vec3(1.0), vec3(0.82), k);
-  o = vec4(c.rgb + checker * (1.0 - c.a), 1.0);
+  vec3 base = u_hasBg ? u_bg : mix(vec3(1.0), vec3(0.82), k);
+  if (u_hasUnder) {
+    vec4 u = texture(u_under, v_uv);
+    base = u.rgb + base * (1.0 - u.a);
+  }
+  o = vec4(c.rgb + base * (1.0 - c.a), 1.0);
+}`;
+
+/**
+ * Onion skin: a neighbouring frame (premultiplied), faded and tinted towards a color while
+ * keeping its alpha.
+ */
+export const ONION_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+uniform float u_opacity;
+uniform vec3 u_tint;
+uniform float u_tintAmount;
+out vec4 o;
+void main() {
+  vec4 c = texture(u_src, v_uv);
+  o = vec4(mix(c.rgb, u_tint * c.a, u_tintAmount), c.a) * u_opacity;
 }`;
 
 /**
@@ -178,33 +218,57 @@ void main() {
 }`;
 
 /**
- * One direction of a separable Gaussian blur, on premultiplied pixels. `u_step` is the uv offset
- * between taps (wider than a pixel for big radii; bilinear sampling fills in), `u_sigma` is in taps.
+ * Draws into a region at the origin of a target and reads from a region at the origin of another:
+ * the Gaussian blur keeps its downsampled levels inside existing full-size buffers. `v_uv` is in
+ * the source texture, `v_corner` runs 0..1 over the destination region.
+ */
+export const REGION_VS = `#version 300 es
+layout(location = 0) in vec2 a_corner;
+uniform vec2 u_dstRegion; // destination region / destination texture size
+uniform vec2 u_srcRegion; // source region / source texture size
+out vec2 v_uv;
+out vec2 v_corner;
+void main() {
+  v_uv = a_corner * u_srcRegion;
+  v_corner = a_corner;
+  gl_Position = vec4(a_corner * u_dstRegion * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+/**
+ * One direction of a separable Gaussian blur on premultiplied pixels, read from a source region
+ * (taps are clamped to it, like CLAMP_TO_EDGE). `u_step` is one texel; with `u_taps` = 0 it is a
+ * plain bilinear copy, which halves a level when the destination is half the size.
  */
 export const GAUSS_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
+in vec2 v_corner;
 uniform sampler2D u_src;
+uniform vec2 u_uvMin;
+uniform vec2 u_uvMax;
 uniform vec2 u_step;
 uniform float u_sigma;
 uniform int u_taps;
 out vec4 o;
-// Alpha-locked layers keep their own alpha: blurring only moves color around inside it.
+// Alpha-locked layers keep their own alpha (the full-size original, at v_corner).
 uniform bool u_keepAlpha;
 uniform sampler2D u_alpha;
 vec4 keepAlpha(vec4 f) {
   if (!u_keepAlpha) return f;
-  float a = texture(u_alpha, v_uv).a;
+  float a = texture(u_alpha, v_corner).a;
   return vec4((f.a > 0.0 ? f.rgb / f.a : vec3(0.0)) * a, a);
 }
+vec4 tap(vec2 uv) {
+  return texture(u_src, clamp(uv, u_uvMin, u_uvMax));
+}
 void main() {
-  vec4 sum = texture(u_src, v_uv);
+  vec4 sum = tap(v_uv);
   float total = 1.0;
   for (int i = 1; i <= 64; i++) {
     if (i > u_taps) break;
     float x = float(i);
     float w = exp(-0.5 * x * x / (u_sigma * u_sigma));
-    sum += (texture(u_src, v_uv + u_step * x) + texture(u_src, v_uv - u_step * x)) * w;
+    sum += (tap(v_uv + u_step * x) + tap(v_uv - u_step * x)) * w;
     total += 2.0 * w;
   }
   o = keepAlpha(sum / total);

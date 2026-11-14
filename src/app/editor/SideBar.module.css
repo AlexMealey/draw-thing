@@ -1,7 +1,7 @@
 .sidebar {
   --slider-h: clamp(96px, 24dvh, 200px);
   position: fixed;
-  top: 50%;
+  top: calc(50% - var(--timeline-space, 0px) / 2);
   left: calc(var(--safe-left) + var(--space-2));
   transform: translateY(-50%);
   display: flex;
@@ -24,6 +24,6 @@
 @media (max-height: 560px) {
   .sidebar {
     --slider-h: clamp(64px, 18dvh, 120px);
-    top: calc(50% + var(--topbar-h) / 2);
+    top: calc(50% + var(--topbar-h) / 2 - var(--timeline-space, 0px) / 2);
   }
 }

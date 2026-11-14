@@ -13,6 +13,9 @@ export interface DabDrawOptions {
   /** Tip shape and grain; omitted for plain round dabs (and the cursor ring). */
   preset?: BrushPreset;
   ring?: boolean;
+  /** Ring only: dashes alternate between `color` and `color2`. */
+  dashed?: boolean;
+  color2?: readonly [number, number, number, number];
 }
 
 const GRAIN_MODE = { moving: 1, texturized: 2 } as const;
@@ -85,6 +88,8 @@ export class DabRenderer {
       u_color: opts.color,
       u_aa: opts.aa,
       u_ring: opts.ring ?? false,
+      u_dashed: opts.dashed ?? false,
+      u_color2: opts.color2 ?? opts.color,
       u_hardness: preset?.tip.hardness ?? 1,
       u_roundness: preset?.tip.roundness ?? 1,
       u_grain: 0,

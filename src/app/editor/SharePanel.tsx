@@ -2,11 +2,13 @@ import { useState } from 'react';
 import type { Engine } from '../../engine/Engine';
 import { deliver } from '../../files/deliver';
 import { exportArtwork, type ExportedFile, type ExportFormat } from '../../files/exportArtwork';
+import { useDocument } from '../../state/documentStore';
 import type { OpenProject } from '../project';
 import { percent } from '../ui/format';
 import { Panel } from '../ui/Panel';
 import { SliderRow } from '../ui/SliderRow';
 import ui from '../ui/ui.module.css';
+import { AnimationExport } from './AnimationExport';
 
 interface Props {
   project: OpenProject;
@@ -29,6 +31,7 @@ export function SharePanel({ project, engine, flush, onNotice, onClose }: Props)
   const [busy, setBusy] = useState<string | null>(null);
   /** An export whose save dialog needs a fresh tap (the first one expired while encoding). */
   const [ready, setReady] = useState<ExportedFile | null>(null);
+  const animated = useDocument((s) => s.animation.enabled || s.frames.length > 1);
 
   const save = async (file: ExportedFile) => {
     const result = await deliver(file.blob, file.filename);
@@ -80,6 +83,24 @@ export function SharePanel({ project, engine, flush, onNotice, onClose }: Props)
         format={percent}
         onChange={setQuality}
       />
+      {animated && (
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--color-text-muted)' }}>
+          PNG, JPEG and PSD export the frame you’re on; DrawThing keeps every frame.
+        </p>
+      )}
+      {animated && (
+        <AnimationExport
+          engine={engine}
+          project={project}
+          busy={!!busy}
+          setBusy={(m) => {
+            setBusy(m);
+            if (m) setReady(null);
+          }}
+          onSave={save}
+          onNotice={onNotice}
+        />
+      )}
       {busy && (
         <p role="status" style={{ margin: 0, fontSize: 14, color: 'var(--color-text-muted)' }}>
           {busy}

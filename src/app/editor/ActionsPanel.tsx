@@ -12,6 +12,7 @@ import { BackgroundPicker } from '../ui/BackgroundPicker';
 import { fileSize, percent } from '../ui/format';
 import { Panel } from '../ui/Panel';
 import { SliderRow } from '../ui/SliderRow';
+import { STEP_CHOICES } from '../ui/sliderStep';
 import ui from '../ui/ui.module.css';
 
 interface Props {
@@ -41,7 +42,11 @@ const GESTURES: [string, string][] = [
   ['B / E / L / C', 'Brush, eraser, layers, color'],
   ['[ and ]', 'Smaller / bigger brush'],
   ['Ctrl/⌘ + and −', 'Zoom in / out'],
+  ['Mouse wheel', 'Zoom (Shift + wheel moves sideways)'],
+  ['Shift / Alt + slider', 'Move a slider in bigger steps (set under Input)'],
   ['← and →', 'Rotate the canvas; hold to keep turning (turn on under Canvas view)'],
+  [', and .', 'Previous / next frame (animation)'],
+  ['/', 'Play or stop the animation'],
 ];
 
 export function ActionsPanel({
@@ -58,6 +63,8 @@ export function ActionsPanel({
   const width = useDocument((s) => s.width);
   const height = useDocument((s) => s.height);
   const layers = useDocument((s) => s.layers.length);
+  const frames = useDocument((s) => s.frames.length);
+  const animation = useDocument((s) => s.animation.enabled);
   const maxLayers = useDocument((s) => s.maxLayers);
   const sidebarRight = useTools((s) => s.sidebarRight);
   const fingerDrawing = useTools((s) => s.fingerDrawing);
@@ -69,6 +76,12 @@ export function ActionsPanel({
   const newCanvasBackground = useTools((s) => s.newCanvasBackground);
   const colorPicker = useTools((s) => s.colorPicker);
   const colorSliders = useTools((s) => s.colorSliders);
+  const wheel = useTools((s) => s.wheel);
+  const stepShift = useTools((s) => s.stepShift);
+  const stepAlt = useTools((s) => s.stepAlt);
+  const cursorOutline = useTools((s) => s.cursorOutline);
+  const cursorOutlineSize = useTools((s) => s.cursorOutlineSize);
+  const cursorOutlineFixed = useTools((s) => s.cursorOutlineFixed);
   const { setPrefs } = toolStore.getState();
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -106,7 +119,16 @@ export function ActionsPanel({
         <strong>{project.name}</strong>
         <br />
         {width} × {height} px · {layers} of {maxLayers} layers
+        {frames > 1 && ` per frame · ${frames} frames`}
       </p>
+      <label className={ui.switch}>
+        Animation (frames and timeline)
+        <input
+          type="checkbox"
+          checked={animation}
+          onChange={(e) => documentStore.getState().setAnimation({ enabled: e.target.checked })}
+        />
+      </label>
       <p style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button className={ui.textButton} onClick={onNewCanvas}>
           New canvas…
@@ -204,6 +226,22 @@ export function ActionsPanel({
           onChange={(v) => setPrefs({ arrowRotateStep: Math.max(1, v) })}
         />
       )}
+      <div className={ui.switch} role="radiogroup" aria-label="Mouse wheel">
+        Mouse wheel
+        <span style={{ display: 'flex', gap: 6 }}>
+          {(['zoom', 'pan'] as const).map((w) => (
+            <button
+              key={w}
+              role="radio"
+              aria-checked={wheel === w}
+              className={`${ui.textButton} ${wheel === w ? ui.primary : ''}`}
+              onClick={() => setPrefs({ wheel: w })}
+            >
+              {w === 'zoom' ? 'Zooms' : 'Scrolls'}
+            </button>
+          ))}
+        </span>
+      </div>
       <label className={ui.switch}>
         Snap rotation to quarter turns
         <input
@@ -229,6 +267,62 @@ export function ActionsPanel({
         format={percent}
         onChange={(v) => setPrefs({ sizeStep: v })}
       />
+
+      <h3 className={ui.section}>Brush cursor</h3>
+      <label className={ui.switch}>
+        Dashed outline instead of the pointer
+        <input
+          type="checkbox"
+          checked={cursorOutline}
+          onChange={(e) => setPrefs({ cursorOutline: e.target.checked })}
+        />
+      </label>
+      {cursorOutline && (
+        <>
+          <p style={{ margin: '0 0 4px', fontSize: 13, color: 'var(--color-text-muted)' }}>
+            Stays visible while drawing, so a light touch or a drawing tablet never loses track of
+            where the pen is.
+          </p>
+          <div className={ui.switch} role="radiogroup" aria-label="Outline size">
+            Outline size
+            <span style={{ display: 'flex', gap: 6 }}>
+              {(['brush', 'fixed'] as const).map((m) => (
+                <button
+                  key={m}
+                  role="radio"
+                  aria-checked={cursorOutlineSize === m}
+                  className={`${ui.textButton} ${cursorOutlineSize === m ? ui.primary : ''}`}
+                  onClick={() => setPrefs({ cursorOutlineSize: m })}
+                >
+                  {m === 'brush' ? 'Brush size' : 'Fixed'}
+                </button>
+              ))}
+            </span>
+          </div>
+          {cursorOutlineSize === 'fixed' && (
+            <SliderRow
+              label="Fixed size"
+              value={cursorOutlineFixed}
+              min={8}
+              max={200}
+              step={1}
+              format={(v) => `${Math.round(v)} px`}
+              onChange={(v) => setPrefs({ cursorOutlineFixed: Math.round(v) })}
+            />
+          )}
+        </>
+      )}
+
+      <h3 className={ui.section}>Input</h3>
+      <p style={{ margin: '0 0 4px', fontSize: 13, color: 'var(--color-text-muted)' }}>
+        Hold Shift or Alt while dragging a slider to move it in steps (px, % or degrees).
+      </p>
+      <StepChoice
+        label="Shift step"
+        value={stepShift}
+        onChange={(v) => setPrefs({ stepShift: v })}
+      />
+      <StepChoice label="Alt step" value={stepAlt} onChange={(v) => setPrefs({ stepAlt: v })} />
 
       <h3 className={ui.section}>New canvas background</h3>
       <BackgroundPicker
@@ -274,6 +368,26 @@ export function ActionsPanel({
         ))}
       </dl>
     </Panel>
+  );
+}
+
+function StepChoice(p: { label: string; value: number; onChange: (value: number) => void }) {
+  return (
+    <label className={ui.switch}>
+      {p.label}
+      <select
+        className={ui.select}
+        style={{ width: 'auto', minWidth: 88 }}
+        value={p.value}
+        onChange={(e) => p.onChange(Number(e.target.value))}
+      >
+        {STEP_CHOICES.map((n) => (
+          <option key={n} value={n}>
+            {n}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

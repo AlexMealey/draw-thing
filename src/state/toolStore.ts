@@ -3,12 +3,17 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import { createStore } from 'zustand/vanilla';
 import { type BrushOverride, resolvePreset } from '../engine/brush/overrides';
 import { type BrushPreset, DEFAULT_PRESET_ID, PRESETS, presetById } from '../engine/brush/presets';
+import { DEFAULT_ONION, type OnionSettings } from '../engine/frames/onion';
 import type { ToolSettings } from '../engine/brush/tool';
 import { type Background, DEFAULT_BACKGROUND } from './documentStore';
 import { safeStorage } from './safeStorage';
 
 export type ToolMode = 'paint' | 'erase';
 export type ColorPicker = 'square' | 'wheel';
+/** What a mouse wheel does over the canvas (Ctrl/⌘ + wheel and trackpad pinch always zoom). */
+export type WheelAction = 'zoom' | 'pan';
+/** The dashed cursor outline follows the brush size, or stays a fixed size on screen. */
+export type CursorOutlineSize = 'brush' | 'fixed';
 
 export interface BrushAdjustments {
   size: number;
@@ -56,6 +61,17 @@ export interface ToolState {
   colorPicker: ColorPicker;
   /** Hue, saturation, brightness and contrast sliders under the picker. */
   colorSliders: boolean;
+  wheel: WheelAction;
+  /** Slider steps while Shift or Alt is held, in the slider's units (px, %, °). */
+  stepShift: number;
+  stepAlt: number;
+  /** A dashed outline replaces the pointer over the canvas, and stays visible while drawing. */
+  cursorOutline: boolean;
+  cursorOutlineSize: CursorOutlineSize;
+  /** Diameter of the fixed-size outline, screen CSS px. */
+  cursorOutlineFixed: number;
+  /** Onion skin while drawing an animation. */
+  onion: OnionSettings;
 
   setMode(mode: ToolMode): void;
   selectPreset(id: string): void;
@@ -88,7 +104,14 @@ type Pref =
   | 'keyZoomStep'
   | 'newCanvasBackground'
   | 'colorPicker'
-  | 'colorSliders';
+  | 'colorSliders'
+  | 'wheel'
+  | 'stepShift'
+  | 'stepAlt'
+  | 'cursorOutline'
+  | 'cursorOutlineSize'
+  | 'cursorOutlineFixed'
+  | 'onion';
 
 const MAX_RECENT = 16;
 const MODES: readonly ToolMode[] = ['paint', 'erase'];
@@ -109,12 +132,14 @@ function nextName(name: string, customs: readonly CustomBrush[]): string {
   return `${base} ${n}`;
 }
 
+/** Brushes can be as big as the canvas's shorter side, whatever the brush. */
+export function maxBrushSize(width: number, height: number): number {
+  return Math.max(1, Math.min(width, height));
+}
+
 export function defaultAdjustments(preset: BrushPreset, mode: ToolMode): BrushAdjustments {
   return {
-    size:
-      mode === 'erase'
-        ? Math.min(preset.size.max, Math.max(preset.size.default, 40))
-        : preset.size.default,
+    size: mode === 'erase' ? Math.max(preset.size.default, 40) : preset.size.default,
     opacity: preset.opacity,
     smoothing: preset.stabilization,
   };
@@ -141,6 +166,13 @@ export const toolStore = createStore<ToolState>()(
       newCanvasBackground: DEFAULT_BACKGROUND,
       colorPicker: 'square',
       colorSliders: true,
+      wheel: 'zoom',
+      stepShift: 5,
+      stepAlt: 10,
+      cursorOutline: false,
+      cursorOutlineSize: 'brush',
+      cursorOutlineFixed: 24,
+      onion: { ...DEFAULT_ONION },
 
       setMode: (mode) => set({ mode }),
       selectPreset: (id) => set({ presetIds: { ...get().presetIds, [get().mode]: id } }),
@@ -251,6 +283,13 @@ export const toolStore = createStore<ToolState>()(
         newCanvasBackground: s.newCanvasBackground,
         colorPicker: s.colorPicker,
         colorSliders: s.colorSliders,
+        wheel: s.wheel,
+        stepShift: s.stepShift,
+        stepAlt: s.stepAlt,
+        cursorOutline: s.cursorOutline,
+        cursorOutlineSize: s.cursorOutlineSize,
+        cursorOutlineFixed: s.cursorOutlineFixed,
+        onion: s.onion,
       }),
     },
   ),

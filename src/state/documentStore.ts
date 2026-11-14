@@ -51,6 +51,39 @@ export interface Background {
 
 export const DEFAULT_BACKGROUND: Background = { color: '#ffffff', visible: true };
 
+/** One frame of an animation. Its pixels are its own layer stack. */
+export interface FrameMeta {
+  id: string;
+  /** How many ticks (1 / fps) the frame stays on screen: 2 = "on twos". */
+  hold: number;
+}
+
+/** A frame's layer stack while another frame is the active one. */
+export interface FrameStack {
+  layers: LayerMeta[];
+  groups: LayerGroup[];
+  activeLayerId: string;
+}
+
+export interface AnimationSettings {
+  /** Shows the timeline. A document always has at least one frame either way. */
+  enabled: boolean;
+  /** Ticks per second. */
+  fps: number;
+}
+
+export const DEFAULT_ANIMATION: AnimationSettings = { enabled: false, fps: 12 };
+export const MIN_FPS = 1;
+export const MAX_FPS = 60;
+export const MAX_HOLD = 99;
+
+export const clampFps = (fps: number) =>
+  Number.isFinite(fps)
+    ? Math.min(MAX_FPS, Math.max(MIN_FPS, Math.round(fps)))
+    : DEFAULT_ANIMATION.fps;
+export const clampHold = (hold: number) =>
+  Number.isFinite(hold) ? Math.min(MAX_HOLD, Math.max(1, Math.round(hold))) : 1;
+
 export interface DocumentState {
   width: number;
   height: number;
@@ -66,6 +99,15 @@ export interface DocumentState {
   layerCounter: number;
   /** Numbering for new group names. */
   groupCounter: number;
+  /**
+   * Animation frames, in playback order. The active frame's stack is `layers`/`groups`/
+   * `activeLayerId`; every other frame's is in `parked`. Layer and group ids are unique across
+   * all frames.
+   */
+  frames: FrameMeta[];
+  activeFrameId: string;
+  parked: Readonly<Record<string, FrameStack>>;
+  animation: AnimationSettings;
 
   /** A blank document; the background defaults to visible white. */
   reset(opts: { width: number; height: number; maxLayers: number; background?: Background }): void;
@@ -107,6 +149,16 @@ export interface DocumentState {
   moveGroup(id: string, index: number): void;
   /** Takes a layer out of its group, placing it just above the group. */
   removeFromGroup(id: string): void;
+  /** Makes another frame the active one (its stack becomes `layers`). False if it can't. */
+  selectFrame(id: string): boolean;
+  /** Adds a frame with its stack at a position in the frame list and makes it active. */
+  insertFrame(frame: FrameMeta, stack: FrameStack, index: number): void;
+  /** Deletes a frame (never the last one); deleting the active one selects its neighbour. */
+  removeFrame(id: string): boolean;
+  /** Moves a frame to a position in the frame list. */
+  moveFrame(id: string, index: number): void;
+  setFrameHold(id: string, hold: number): void;
+  setAnimation(patch: Partial<AnimationSettings>): void;
 }
 
 /** The state without its actions. */
@@ -129,13 +181,28 @@ export type DocumentData = Omit<
   | 'removeGroup'
   | 'moveGroup'
   | 'removeFromGroup'
+  | 'selectFrame'
+  | 'insertFrame'
+  | 'removeFrame'
+  | 'moveFrame'
+  | 'setFrameHold'
+  | 'setAnimation'
 >;
 
-/** Document data as saved: documents from before groups existed have none. */
-export type DocumentInput = Omit<DocumentData, 'layers' | 'groups' | 'groupCounter'> & {
-  layers: readonly (Omit<LayerMeta, 'groupId'> & { groupId?: string | null })[];
+/**
+ * Document data as saved: every frame's layers in one list, each tagged with its frame. Documents
+ * from before groups existed have none; documents from before frames existed have one frame.
+ */
+export type DocumentInput = Omit<
+  DocumentData,
+  'layers' | 'groups' | 'groupCounter' | 'frames' | 'activeFrameId' | 'parked' | 'animation'
+> & {
+  layers: readonly (Omit<LayerMeta, 'groupId'> & { groupId?: string | null; frameId?: string })[];
   groups?: readonly LayerGroup[];
   groupCounter?: number;
+  frames?: readonly (FrameMeta & { activeLayerId?: string })[];
+  activeFrameId?: string;
+  animation?: AnimationSettings;
 };
 
 let idSeq = 0;
@@ -152,6 +219,11 @@ export function makeLayer(name: string): LayerMeta {
     alphaLocked: false,
     groupId: null,
   };
+}
+
+export function makeFrame(hold = 1): FrameMeta {
+  idSeq += 1;
+  return { id: `frame-${Date.now().toString(36)}-${idSeq}`, hold };
 }
 
 export function makeGroup(name: string): LayerGroup {
@@ -171,15 +243,15 @@ export function makeGroup(name: string): LayerGroup {
  * Makes a stack consistent: layers of unknown groups are ungrouped, a layer separated from the
  * rest of its group leaves it, and groups without layers go. Unchanged arrays are returned as is.
  */
-export function normalizeGroups(
-  layers: readonly LayerMeta[],
+export function normalizeGroups<L extends LayerMeta>(
+  layers: readonly L[],
   groups: readonly LayerGroup[],
-): { layers: LayerMeta[]; groups: LayerGroup[] } {
+): { layers: L[]; groups: LayerGroup[] } {
   const known = new Set(groups.map((g) => g.id));
   const closed = new Set<string>();
   let changed = false;
   let prev: string | null = null;
-  const out = layers.map((l) => {
+  const out = layers.map((l): L => {
     let groupId = l.groupId ?? null;
     if (groupId !== null && (!known.has(groupId) || closed.has(groupId))) groupId = null;
     if (prev !== null && prev !== groupId) closed.add(prev);
@@ -191,7 +263,7 @@ export function normalizeGroups(
   const used = new Set(out.map((l) => l.groupId));
   const kept = groups.filter((g) => used.has(g.id));
   return {
-    layers: changed ? out : (layers as LayerMeta[]),
+    layers: changed ? out : (layers as L[]),
     groups: kept.length === groups.length ? (groups as LayerGroup[]) : kept,
   };
 }
@@ -290,8 +362,120 @@ export function activeIndex(state: Pick<DocumentState, 'layers' | 'activeLayerId
   return state.layers.findIndex((l) => l.id === state.activeLayerId);
 }
 
+function without<T>(record: Readonly<Record<string, T>>, key: string): Record<string, T> {
+  const out = { ...record };
+  delete out[key];
+  return out;
+}
+
+type FrameState = Pick<
+  DocumentState,
+  'layers' | 'groups' | 'activeLayerId' | 'frames' | 'activeFrameId' | 'parked'
+>;
+
+/** A frame's layer stack, whether it's the active frame or not. */
+export function frameStack(doc: FrameState, frameId: string): FrameStack | undefined {
+  if (frameId === doc.activeFrameId) {
+    return { layers: doc.layers, groups: doc.groups, activeLayerId: doc.activeLayerId };
+  }
+  return doc.parked[frameId];
+}
+
+/** Every frame's layers, in frame order (each frame bottom first). */
+export function allLayers(doc: FrameState): LayerMeta[] {
+  return doc.frames.flatMap((f) => frameStack(doc, f.id)?.layers ?? []);
+}
+
+export function allLayerIds(doc: FrameState): Set<string> {
+  return new Set(allLayers(doc).map((l) => l.id));
+}
+
+/** The frame a layer belongs to. */
+export function frameOfLayer(doc: FrameState, layerId: string): string | undefined {
+  if (doc.layers.some((l) => l.id === layerId)) return doc.activeFrameId;
+  for (const [id, stack] of Object.entries(doc.parked)) {
+    if (stack.layers.some((l) => l.id === layerId)) return id;
+  }
+  return undefined;
+}
+
+export function frameIndex(doc: Pick<DocumentState, 'frames' | 'activeFrameId'>): number {
+  return doc.frames.findIndex((f) => f.id === doc.activeFrameId);
+}
+
+/**
+ * Splits a saved document's tagged layer list into per-frame stacks. Layers of unknown frames go
+ * to the first frame; frames without layers are dropped; a group never spans two frames.
+ */
+function splitFrames(
+  doc: DocumentInput,
+): Pick<
+  DocumentState,
+  'layers' | 'groups' | 'activeLayerId' | 'frames' | 'activeFrameId' | 'parked'
+> {
+  const listed = doc.frames?.length ? doc.frames : [{ ...makeFrame(), activeLayerId: undefined }];
+  const known = new Set(listed.map((f) => f.id));
+  const firstId = listed[0]!.id;
+  const byFrame = new Map<string, LayerMeta[]>();
+  for (const raw of doc.layers) {
+    const { frameId, ...rest } = raw;
+    const id = frameId !== undefined && known.has(frameId) ? frameId : firstId;
+    let list = byFrame.get(id);
+    if (!list) byFrame.set(id, (list = []));
+    list.push({ ...rest, groupId: rest.groupId ?? null });
+  }
+  const groups = (doc.groups ?? []).map((g) => ({ ...g }));
+  const usedGroups = new Set<string>();
+  const frames: FrameMeta[] = [];
+  const stacks = new Map<string, FrameStack>();
+  for (const f of listed) {
+    const layers = byFrame.get(f.id);
+    if (!layers || layers.length === 0) continue;
+    // A group already used by an earlier frame can't also be in this one.
+    const own = layers.map((l) =>
+      l.groupId !== null && usedGroups.has(l.groupId) ? { ...l, groupId: null } : l,
+    );
+    const stack = normalizeGroups(own, groups);
+    for (const g of stack.groups) usedGroups.add(g.id);
+    const wanted = f.activeLayerId;
+    stacks.set(f.id, {
+      ...stack,
+      activeLayerId: stack.layers.some((l) => l.id === wanted)
+        ? wanted!
+        : stack.layers[stack.layers.length - 1]!.id,
+    });
+    frames.push({ id: f.id, hold: clampHold(f.hold) });
+  }
+  const activeFrameId =
+    doc.activeFrameId !== undefined && stacks.has(doc.activeFrameId)
+      ? doc.activeFrameId
+      : frames[0]!.id;
+  const active = stacks.get(activeFrameId)!;
+  const parked: Record<string, FrameStack> = {};
+  for (const [id, stack] of stacks) if (id !== activeFrameId) parked[id] = stack;
+  return {
+    layers: active.layers,
+    groups: active.groups,
+    activeLayerId: active.layers.some((l) => l.id === doc.activeLayerId)
+      ? doc.activeLayerId
+      : active.activeLayerId,
+    frames,
+    activeFrameId,
+    parked,
+  };
+}
+
 export const documentStore = createStore<DocumentState>()((set, get) => {
   const first = makeLayer('Layer 1');
+  const firstFrame = makeFrame();
+
+  /** The active frame's stack, to park when another frame takes over. */
+  const current = (s: DocumentState): FrameStack => ({
+    layers: s.layers,
+    groups: s.groups,
+    activeLayerId: s.activeLayerId,
+  });
+
   return {
     width: 0,
     height: 0,
@@ -302,9 +486,14 @@ export const documentStore = createStore<DocumentState>()((set, get) => {
     maxLayers: 1,
     layerCounter: 1,
     groupCounter: 0,
+    frames: [firstFrame],
+    activeFrameId: firstFrame.id,
+    parked: {},
+    animation: { ...DEFAULT_ANIMATION },
 
     reset({ width, height, maxLayers, background = DEFAULT_BACKGROUND }) {
       const layer = makeLayer('Layer 1');
+      const frame = makeFrame();
       set({
         width,
         height,
@@ -315,24 +504,30 @@ export const documentStore = createStore<DocumentState>()((set, get) => {
         activeLayerId: layer.id,
         layerCounter: 1,
         groupCounter: 0,
+        frames: [frame],
+        activeFrameId: frame.id,
+        parked: {},
+        animation: { ...DEFAULT_ANIMATION },
       });
     },
 
     load(doc) {
-      // Documents saved before groups existed have neither `groups` nor `groupId`.
-      const stack = normalizeGroups(
-        doc.layers.map((l) => ({ ...l, groupId: l.groupId ?? null })),
-        (doc.groups ?? []).map((g) => ({ ...g })),
-      );
+      // Documents saved before groups existed have neither `groups` nor `groupId`; documents
+      // saved before frames existed are one frame.
+      const split = splitFrames(doc);
+      const groupCount =
+        split.groups.length + Object.values(split.parked).reduce((n, s) => n + s.groups.length, 0);
       set({
         width: doc.width,
         height: doc.height,
         maxLayers: doc.maxLayers,
         background: { ...doc.background },
-        ...stack,
-        activeLayerId: doc.activeLayerId,
+        ...split,
         layerCounter: doc.layerCounter,
-        groupCounter: doc.groupCounter ?? stack.groups.length,
+        groupCounter: doc.groupCounter ?? groupCount,
+        animation: doc.animation
+          ? { enabled: doc.animation.enabled === true, fps: clampFps(doc.animation.fps) }
+          : { ...DEFAULT_ANIMATION },
       });
     },
 
@@ -486,6 +681,74 @@ export const documentStore = createStore<DocumentState>()((set, get) => {
       const layers = [...rest];
       layers.splice(top + 1, 0, { ...layer, groupId: null });
       set(normalizeGroups(layers, s.groups));
+    },
+
+    selectFrame(id) {
+      const s = get();
+      const next = s.parked[id];
+      if (id === s.activeFrameId || !next) return false;
+      set({
+        ...next,
+        activeFrameId: id,
+        parked: { ...without(s.parked, id), [s.activeFrameId]: current(s) },
+      });
+      return true;
+    },
+
+    insertFrame(frame, stack, index) {
+      const s = get();
+      if (stack.layers.length === 0 || s.frames.some((f) => f.id === frame.id)) return;
+      const frames = [...s.frames];
+      frames.splice(Math.min(frames.length, Math.max(0, index)), 0, { ...frame });
+      set({
+        ...stack,
+        frames,
+        activeFrameId: frame.id,
+        parked: { ...s.parked, [s.activeFrameId]: current(s) },
+      });
+    },
+
+    removeFrame(id) {
+      const s = get();
+      const i = s.frames.findIndex((f) => f.id === id);
+      if (i < 0 || s.frames.length <= 1) return false;
+      const frames = s.frames.filter((f) => f.id !== id);
+      if (id !== s.activeFrameId) {
+        set({ frames, parked: without(s.parked, id) });
+        return true;
+      }
+      const next = (s.frames[i + 1] ?? s.frames[i - 1])!;
+      const stack = s.parked[next.id];
+      if (!stack) return false;
+      set({ ...stack, frames, activeFrameId: next.id, parked: without(s.parked, next.id) });
+      return true;
+    },
+
+    moveFrame(id, index) {
+      const s = get();
+      const from = s.frames.findIndex((f) => f.id === id);
+      if (from < 0) return;
+      const to = Math.min(s.frames.length - 1, Math.max(0, index));
+      if (to === from) return;
+      const frames = [...s.frames];
+      const [frame] = frames.splice(from, 1);
+      frames.splice(to, 0, frame!);
+      set({ frames });
+    },
+
+    setFrameHold(id, hold) {
+      const s = get();
+      const h = clampHold(hold);
+      if (!s.frames.some((f) => f.id === id && f.hold !== h)) return;
+      set({ frames: s.frames.map((f) => (f.id === id ? { ...f, hold: h } : f)) });
+    },
+
+    setAnimation(patch) {
+      const s = get();
+      const next = { ...s.animation, ...patch };
+      next.fps = clampFps(next.fps);
+      if (next.enabled === s.animation.enabled && next.fps === s.animation.fps) return;
+      set({ animation: next });
     },
   };
 });

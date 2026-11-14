@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseSavedDocument, type SavedDocument } from './document';
+import { documentStore } from '../state/documentStore';
+import { parseSavedDocument, type SavedDocument, toSaved } from './document';
 
 const valid: SavedDocument = {
   schema: 1,
@@ -94,5 +95,85 @@ describe('parseSavedDocument', () => {
     ['a bad background', { ...valid, background: { color: 'red' } }],
   ])('rejects %s', (_, doc) => {
     expect(() => parseSavedDocument(doc)).toThrow(/Not a DrawThing document/);
+  });
+});
+
+describe('saved frames', () => {
+  const animated: SavedDocument = {
+    ...valid,
+    layers: [
+      { ...layer('a1', 'g1'), frameId: 'f1' },
+      { ...layer('b1', null), frameId: 'f2' },
+      { ...layer('a2', null), frameId: 'f1' },
+    ],
+    groups: [group('g1')],
+    activeLayerId: 'b1',
+    frames: [
+      { id: 'f1', hold: 2, activeLayerId: 'a2' },
+      { id: 'f2', hold: 1, activeLayerId: 'b1' },
+    ],
+    activeFrameId: 'f2',
+    animation: { enabled: true, fps: 24 },
+  };
+
+  it('keeps frames, holds and the frame rate, with each frame’s layers together', () => {
+    const doc = parseSavedDocument(JSON.parse(JSON.stringify(animated)));
+    expect(doc.layers.map((l) => [l.id, l.frameId])).toEqual([
+      ['a1', 'f1'],
+      ['a2', 'f1'],
+      ['b1', 'f2'],
+    ]);
+    expect(doc.frames).toEqual(animated.frames);
+    expect(doc.activeFrameId).toBe('f2');
+    expect(doc.activeLayerId).toBe('b1');
+    expect(doc.animation).toEqual({ enabled: true, fps: 24 });
+  });
+
+  it('repairs frames: unknown tags go to the first frame, empty frames go, bad holds clamp', () => {
+    const doc = parseSavedDocument({
+      ...animated,
+      layers: [
+        { ...layer('a1', null), frameId: 'ghost' },
+        { ...layer('b1', null), frameId: 'f2' },
+      ],
+      groups: [],
+      frames: [
+        { id: 'f1', hold: -4, activeLayerId: 'missing' },
+        { id: 'f2', hold: 1.6 },
+        { id: 'f3', hold: 1 },
+      ],
+      activeFrameId: 'f3',
+      animation: { enabled: 'yes', fps: 900 },
+    });
+    expect(doc.frames).toEqual([
+      { id: 'f1', hold: 1, activeLayerId: 'a1' },
+      { id: 'f2', hold: 2, activeLayerId: 'b1' },
+    ]);
+    expect(doc.layers.map((l) => l.frameId)).toEqual(['f1', 'f2']);
+    expect(doc.activeFrameId).toBe('f1');
+    expect(doc.activeLayerId).toBe('a1');
+    expect(doc.animation).toEqual({ enabled: false, fps: 60 });
+  });
+
+  it('rejects bad frame ids', () => {
+    expect(() => parseSavedDocument({ ...animated, frames: [{ id: '../x', hold: 1 }] })).toThrow(
+      /frame id/,
+    );
+    expect(() =>
+      parseSavedDocument({
+        ...animated,
+        frames: [
+          { id: 'f', hold: 1 },
+          { id: 'f', hold: 1 },
+        ],
+      }),
+    ).toThrow(/frame id/);
+  });
+
+  it('round-trips through the store', () => {
+    const parsed = parseSavedDocument(JSON.parse(JSON.stringify(animated)));
+    documentStore.getState().load({ ...parsed, maxLayers: 10 });
+    const saved = toSaved(documentStore.getState());
+    expect(parseSavedDocument(JSON.parse(JSON.stringify(saved)))).toEqual(parsed);
   });
 });
