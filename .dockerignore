@@ -9,3 +9,4 @@ test-results
 deploy/env
 docs
 README.md
+src-tauri/target

@@ -172,6 +172,75 @@ docker run -d --name drawthing -p 127.0.0.1:8080:80 ghcr.io/alexmealey/draw-thin
 For LAN or cloud mode, set `APP_IMAGE=ghcr.io/alexmealey/draw-thing` in the env file, then
 `docker compose --env-file <file> pull app` and `up -d app`, without `--build`.
 
+## Desktop app (experimental)
+
+The `experimental/tauri` branch also builds DrawThing as a native desktop app with
+[Tauri](https://tauri.app): an `.exe` on Windows, a `.dmg` on macOS and an AppImage/`.deb` on
+Linux. It needs no Docker and no browser. It's the same app with two differences:
+
+- **Your artwork lives in a library folder you choose**, as plain files, rather than in browser
+  storage. The default is `Documents/DrawThing`. To change it, open **Actions** in the top bar,
+  then **Change location…** under Library:
+  - If the folder you pick is empty, DrawThing offers to move your library there. It can also start
+    an empty library there instead.
+  - If the folder already holds a DrawThing library, it switches to that one, and the old library
+    stays where it is.
+  - If the folder has other files in it (Documents, say), the library goes in a `DrawThing`
+    subfolder.
+
+  The folder holds the artwork plus brushes, palettes and preferences, so they all move with it
+  (onto a synced drive like OneDrive, for example). It also has an `Exports` folder, where the
+  Save dialog starts. **Show in folder** opens the library folder.
+
+- Double-clicking a `.drawthing` file opens it in the app, and so does opening one with the app
+  while it's running.
+
+```
+<library>/
+  library.json                    marks the folder as a library; the last open artwork
+  settings/tools.json             brushes and preferences
+  settings/palettes.json          palettes
+  artworks/<id>/project.json      name, size and layers
+  artworks/<id>/thumb.png         gallery thumbnail
+  artworks/<id>/tiles/<layer>/<n>.bin   pixels, 256 × 256 tiles (zlib-deflated RGBA)
+  Exports/
+```
+
+Each autosave is written whole to a journal before any file changes, so killing the app mid-save
+never leaves an artwork half-saved: the next launch finishes the save.
+
+**Get it:** download the build for your OS from the Artifacts of the latest
+[Desktop app workflow run](https://github.com/alexmealey/draw-thing/actions/workflows/desktop.yml).
+The builds aren't signed, so Windows SmartScreen ("More info → Run anyway") or macOS Gatekeeper
+(right-click → Open) asks once. Browser artwork doesn't carry over by itself. Use Share →
+DrawThing in the browser, then import the files in the app.
+
+**Build it yourself:** you need Node 22 and [Rust](https://rustup.rs) on the machine you build
+for (plus Tauri's [system packages](https://tauri.app/start/prerequisites/) on Linux):
+
+```bash
+npm ci
+```
+
+```bash
+npm run desktop
+```
+
+`npm run desktop` opens the app with hot reload. `npm run desktop:build` makes the installer in
+`src-tauri/target/release/bundle/`. From WSL or Linux with only Docker, the `desktop` image runs
+the Rust tests and the Linux build:
+
+```bash
+./scripts/dcargo test
+```
+
+```bash
+docker compose run --rm -w /app desktop sh -c "npm ci && npm run desktop:build"
+```
+
+Pen input needs a native window. WSLg doesn't pass the pen through, so try drawing on Windows
+itself.
+
 ## Testing on tablets during development
 
 - **Pen input over the LAN, with hot reload:** start the dev server with
@@ -212,17 +281,21 @@ src/
   state/      Zustand stores: document (layers), tools and palettes (persisted per device), history,
               thumbnails, view
   engine/     WebGL2 engine: input, gestures, view transform, brush, layers, history, rendering
-  persistence/  IndexedDB projects and tiles, the autosaver, the saved document format
+  persistence/  stored projects and tiles (IndexedDB, or desktop/ for the library folder), the
+              autosaver, the saved document format
   files/      export and import: PNG/JPEG, PSD (ag-psd, in a worker), .drawthing (zip), delivery
   debug/      flags, HUD, remote logging client, stroke recorder controls
   lab/        benchmark lab (?lab): benchmarks, soak, synthetic strokes, regression scenes
-  platform/   OS / install-mode detection, service worker updates, install prompt, file launches
+  platform/   OS / install-mode detection, service worker updates, install prompt, file launches;
+              desktop.ts for the desktop app (settings, opened files, library location)
   styles/     global CSS: design tokens + browser-gesture suppression
 tools/        Vite plugins (remote-log endpoint), bundle-size check
 e2e/          Playwright tests; snapshots/ holds reference images, recordings/ real pen sessions
 deploy/       Caddyfile and env presets (local / LAN / cloud)
-scripts/      dnpm (npm in Docker), e2e
+src-tauri/    the desktop app: Rust shell, library folder (src/library/), tauri.conf.json
+scripts/      dnpm (npm in Docker), dcargo (cargo in Docker), e2e
 Dockerfile, compose.yaml
 .github/workflows/publish.yml   publishes the runtime image to ghcr.io
+.github/workflows/desktop.yml   builds the desktop app for Windows, macOS and Linux
 public/logo.svg   source for all generated icons and iPad splash screens (pwa-assets.config.ts)
 ```

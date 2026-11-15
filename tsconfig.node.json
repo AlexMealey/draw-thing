@@ -17,5 +17,12 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["vite.config.ts", "pwa-assets.config.ts", "playwright.config.ts", "tools", "e2e"]
+  "include": [
+    "vite.config.ts",
+    "pwa-assets.config.ts",
+    "playwright.config.ts",
+    "tools",
+    "e2e",
+    "src/types/desktop.d.ts"
+  ]
 }

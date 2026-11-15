@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DrawThing",
+  "version": "0.1.0",
+  "identifier": "app.drawthing.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev:desktop",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build:desktop",
+    "frontendDist": "../dist-desktop"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "DrawThing",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 640,
+        "minHeight": 480,
+        "backgroundColor": "#1c1c1e",
+        "useHttpsScheme": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "app", "dmg", "appimage", "deb"],
+    "category": "GraphicsAndDesign",
+    "shortDescription": "A fast, pen-first drawing app",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["drawthing"],
+        "name": "DrawThing artwork",
+        "description": "DrawThing artwork",
+        "mimeType": "application/x-drawthing",
+        "role": "Editor"
+      }
+    ],
+    "windows": {
+      "nsis": { "installMode": "currentUser" }
+    }
+  }
+}

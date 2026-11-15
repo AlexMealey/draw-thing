@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+# cargo for the desktop app (src-tauri/), run inside the desktop container. The host needs no Rust.
+#   ./scripts/dcargo test
+#   ./scripts/dcargo clippy --all-targets
+# The Linux desktop build: docker compose run --rm -w /app desktop sh -c "npm ci && npm run desktop:build"
+set -e
+cd "$(dirname "$0")/.."
+exec docker compose run --rm desktop cargo "$@"

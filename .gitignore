@@ -9,3 +9,6 @@ test-results
 # Deployment settings with real addresses stay local
 deploy/env/*.env
 !deploy/env/local.env
+dist-desktop
+src-tauri/target
+src-tauri/gen

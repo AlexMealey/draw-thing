@@ -8,8 +8,10 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:desktop": "vite --mode desktop",
     "dev:https": "HTTPS=1 vite",
     "build": "tsc -b && vite build",
+    "build:desktop": "tsc -b && vite build --mode desktop",
     "preview": "vite preview",
     "preview:https": "HTTPS=1 vite preview",
     "size": "npm run build && node tools/check-bundle.ts",
@@ -20,9 +22,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test",
+    "tauri": "tauri",
+    "desktop": "tauri dev",
+    "desktop:build": "tauri build"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
     "ag-psd": "^31.0.3",
     "fflate": "^0.8.3",
     "gifenc": "^1.0.3",
@@ -35,6 +41,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.64.1",
+    "@tauri-apps/cli": "^2.12.4",
     "@types/node": "^22.20.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",

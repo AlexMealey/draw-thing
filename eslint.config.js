@@ -7,7 +7,14 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default defineConfig([
-  globalIgnores(['dist', 'dev-dist', 'playwright-report', 'test-results']),
+  globalIgnores([
+    'dist',
+    'dist-desktop',
+    'dev-dist',
+    'playwright-report',
+    'test-results',
+    'src-tauri',
+  ]),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

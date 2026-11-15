@@ -127,7 +127,7 @@ export function DebugHud() {
   const p = snap?.pointer;
   const e = snap?.engine;
   const lines = [
-    `${OS_LABEL[platform.os]} · ${platform.standalone ? 'installed' : 'tab'} · ${snap?.viewport ?? ''}`,
+    `${OS_LABEL[platform.os]} · ${platform.desktop ? 'desktop' : platform.standalone ? 'installed' : 'tab'} · ${snap?.viewport ?? ''}`,
     `fps ${snap?.fps.toFixed(0) ?? '–'} · worst frame ${snap?.worstFrameMs.toFixed(1) ?? '–'} ms`,
     `events ${snap?.eventsPerSec.toFixed(0) ?? '–'}/s · samples ${snap?.samplesPerSec.toFixed(0) ?? '–'}/s`,
     p

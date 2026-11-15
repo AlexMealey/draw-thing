@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { RecorderControls } from '../../debug/RecorderControls';
 import type { Engine } from '../../engine/Engine';
 import { tileGrid } from '../../engine/history/tiles';
@@ -14,6 +14,9 @@ import { Panel } from '../ui/Panel';
 import { SliderRow } from '../ui/SliderRow';
 import { STEP_CHOICES } from '../ui/sliderStep';
 import ui from '../ui/ui.module.css';
+
+/** The desktop app's library folder in place of browser storage (not in the web bundle). */
+const LibraryLocation = __DESKTOP__ ? lazy(() => import('./LibraryLocation')) : null;
 
 interface Props {
   project: OpenProject;
@@ -160,7 +163,13 @@ export function ActionsPanel({
           </button>
         </p>
       )}
-      <StorageStatus onNotice={onNotice} />
+      {LibraryLocation ? (
+        <Suspense>
+          <LibraryLocation flush={flush} onNotice={onNotice} />
+        </Suspense>
+      ) : (
+        <StorageStatus onNotice={onNotice} />
+      )}
 
       <h3 className={ui.section}>Preferences</h3>
       <label className={ui.switch}>

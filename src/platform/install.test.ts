@@ -5,6 +5,7 @@ import { coachAtLaunch, installRoute } from './install';
 const platform = (os: PlatformInfo['os'], standalone = false): PlatformInfo => ({
   os,
   standalone,
+  desktop: false,
   touch: true,
 });
 

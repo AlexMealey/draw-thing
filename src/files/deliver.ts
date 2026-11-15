@@ -13,6 +13,7 @@ export type Delivery = 'saved' | 'cancelled' | 'needs-tap';
 /**
  * Hands an exported file to the user (ROADMAP §6.1):
  *
+ * - **Desktop app:** the system Save dialog, in the library's Exports folder.
  * - **Windows/Chromium:** the system Save dialog (`showSaveFilePicker`).
  * - **iPad/iPhone:** the share sheet (Save to Files, Photos, AirDrop, other apps).
  * - **Otherwise:** a plain download.
@@ -21,6 +22,11 @@ export type Delivery = 'saved' | 'cancelled' | 'needs-tap';
  * 'needs-tap', and the caller offers a button that calls this again.
  */
 export async function deliver(blob: Blob, filename: string): Promise<Delivery> {
+  if (__DESKTOP__) {
+    // The native Save dialog, starting in the library's Exports folder. No tap needed.
+    const { saveExport } = await import('../platform/desktop');
+    return (await saveExport(blob, filename)) ? 'saved' : 'cancelled';
+  }
   const picker = (window as SaveFilePicker).showSaveFilePicker;
   const ext = filename.slice(filename.lastIndexOf('.'));
   try {

@@ -47,6 +47,19 @@ export function App({ debug }: { debug: boolean }) {
   }, []);
   const flush = useCallback(() => session.current?.saver.flush() ?? Promise.resolve(), []);
   const clearNotice = useCallback(() => setNotice(null), []);
+  // Desktop: closing the window saves the artwork first.
+  useEffect(() => {
+    if (!__DESKTOP__) return;
+    let off: (() => void) | undefined;
+    let cancelled = false;
+    void import('../platform/desktop').then((m) => {
+      if (!cancelled) off = m.beforeClose(flush);
+    });
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, [flush]);
   // An update is offered right after a save, never in the middle of a stroke.
   const onSaved = useCallback(() => {
     if (pwaStore.getState().updateReady) setSavedSinceUpdate(true);

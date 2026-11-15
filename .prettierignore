@@ -5,3 +5,6 @@ test-results
 package-lock.json
 docs
 e2e/recordings/*.json
+dist-desktop
+src-tauri/target
+src-tauri/gen

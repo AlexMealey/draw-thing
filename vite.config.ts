@@ -19,56 +19,67 @@ const allowedHosts =
 // (e.g. a Windows drive bind-mounted into a container).
 const watch = env.VITE_USE_POLLING === '1' ? { usePolling: true, interval: 300 } : undefined;
 
-export default defineConfig({
-  plugins: [
-    react(),
-    https && basicSsl(),
-    remoteLog(),
-    VitePWA({
-      registerType: 'prompt', // never reload under the user mid-stroke
-      injectRegister: false, // registered from React via virtual:pwa-register/react
-      pwaAssets: { config: true, overrideManifestIcons: true },
-      manifest: {
-        id: '/',
-        name: 'DrawThing',
-        short_name: 'DrawThing',
-        description: 'A fast, pen-first drawing app for iPad and Windows tablets.',
-        start_url: '/?source=pwa',
-        scope: '/',
-        display: 'standalone',
-        display_override: ['window-controls-overlay', 'standalone'],
-        orientation: 'any',
-        background_color: '#1c1c1e',
-        theme_color: '#1c1c1e',
-        // "Open with DrawThing" on Windows/ChromeOS (installed app). Files land in launchQueue.
-        file_handlers: [
-          {
-            action: '/?source=file',
-            accept: {
-              'application/x-drawthing': ['.drawthing'],
-              'image/vnd.adobe.photoshop': ['.psd'],
-              'image/png': ['.png'],
-              'image/jpeg': ['.jpg', '.jpeg'],
-              'image/webp': ['.webp'],
+export default defineConfig(({ mode }) => {
+  // `--mode desktop`: the Tauri app (src-tauri/). No service worker or manifest (the app's files
+  // ship inside it; a new version is a new installer), and __DESKTOP__ switches storage to the
+  // library folder. The web build compiles every desktop module out.
+  const desktop = mode === 'desktop';
+  return {
+    define: { __DESKTOP__: JSON.stringify(desktop) },
+    build: desktop ? { outDir: 'dist-desktop' } : undefined,
+    // Keep the Rust compiler's output visible under `tauri dev`.
+    clearScreen: !desktop,
+    plugins: [
+      react(),
+      https && basicSsl(),
+      remoteLog(),
+      VitePWA({
+        disable: desktop,
+        registerType: 'prompt', // never reload under the user mid-stroke
+        injectRegister: false, // registered from React via virtual:pwa-register/react
+        pwaAssets: { disabled: desktop, config: true, overrideManifestIcons: true },
+        manifest: {
+          id: '/',
+          name: 'DrawThing',
+          short_name: 'DrawThing',
+          description: 'A fast, pen-first drawing app for iPad and Windows tablets.',
+          start_url: '/?source=pwa',
+          scope: '/',
+          display: 'standalone',
+          display_override: ['window-controls-overlay', 'standalone'],
+          orientation: 'any',
+          background_color: '#1c1c1e',
+          theme_color: '#1c1c1e',
+          // "Open with DrawThing" on Windows/ChromeOS (installed app). Files land in launchQueue.
+          file_handlers: [
+            {
+              action: '/?source=file',
+              accept: {
+                'application/x-drawthing': ['.drawthing'],
+                'image/vnd.adobe.photoshop': ['.psd'],
+                'image/png': ['.png'],
+                'image/jpeg': ['.jpg', '.jpeg'],
+                'image/webp': ['.webp'],
+              },
             },
-          },
-        ],
-        // Opening a file while the app runs hands it to that window instead of a new one.
-        launch_handler: { client_mode: ['focus-existing', 'auto'] },
-      },
-      workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
-        // iOS fetches launch screens itself when the app is added to the home screen.
-        globIgnores: ['**/apple-splash-*.png'],
-        navigateFallback: 'index.html',
-        navigateFallbackDenylist: [/^\/__/],
-        cleanupOutdatedCaches: true,
-      },
-    }),
-  ],
-  server: { host, allowedHosts, watch, strictPort: true },
-  preview: { host, allowedHosts, strictPort: true },
-  test: {
-    include: ['src/**/*.test.ts'],
-  },
+          ],
+          // Opening a file while the app runs hands it to that window instead of a new one.
+          launch_handler: { client_mode: ['focus-existing', 'auto'] },
+        },
+        workbox: {
+          globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
+          // iOS fetches launch screens itself when the app is added to the home screen.
+          globIgnores: ['**/apple-splash-*.png'],
+          navigateFallback: 'index.html',
+          navigateFallbackDenylist: [/^\/__/],
+          cleanupOutdatedCaches: true,
+        },
+      }),
+    ],
+    server: { host, allowedHosts, watch, strictPort: true },
+    preview: { host, allowedHosts, strictPort: true },
+    test: {
+      include: ['src/**/*.test.ts'],
+    },
+  };
 });

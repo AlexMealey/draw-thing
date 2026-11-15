@@ -23,7 +23,7 @@ const SAVE_DELAY_MS = 500;
 const THUMB_INTERVAL_MS = 10_000;
 
 /**
- * Saves the open project to IndexedDB (ROADMAP §6.2): ~500 ms after the last change, and right
+ * Saves the open project (IndexedDB, or the desktop library folder; ROADMAP §6.2): ~500 ms after the last change, and right
  * away when the app is hidden (iOS may kill a backgrounded PWA without warning). Each save writes
  * only the tiles that changed, taken from the history's own readbacks, so saving never reads the
  * GPU again. Saves run one at a time, in order.
@@ -150,8 +150,8 @@ export class Autosaver {
           this.savedOnce = true;
           await setLastOpen(this.projectId);
           // Ask the browser not to evict artwork under storage pressure (granted silently to
-          // installed PWAs on iOS; Chromium decides by engagement).
-          void navigator.storage?.persist?.().catch(() => {});
+          // installed PWAs on iOS; Chromium decides by engagement). Desktop artwork is files.
+          if (!__DESKTOP__) void navigator.storage?.persist?.().catch(() => {});
         }
         this.opts.onSaved?.();
       } catch (err) {

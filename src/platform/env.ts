@@ -2,8 +2,10 @@ export type OS = 'ipados' | 'ios' | 'windows' | 'android' | 'macos' | 'other';
 
 export interface PlatformInfo {
   os: OS;
-  /** Launched as an installed app (home screen / Start menu) rather than a browser tab. */
+  /** Launched as an installed app (home screen / Start menu, or the desktop app). */
   standalone: boolean;
+  /** The Tauri desktop app rather than a browser. */
+  desktop: boolean;
   touch: boolean;
 }
 
@@ -33,8 +35,10 @@ export function currentPlatform(): PlatformInfo {
   return {
     os: detectOS(nav.userAgent, nav.maxTouchPoints),
     standalone:
+      __DESKTOP__ ||
       nav.standalone === true || // iOS home-screen apps
       STANDALONE_MODES.some((mode) => matchMedia(`(display-mode: ${mode})`).matches),
     touch: nav.maxTouchPoints > 0,
+    desktop: __DESKTOP__,
   };
 }

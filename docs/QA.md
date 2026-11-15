@@ -169,6 +169,29 @@ installed.
 - [ ] MP4 export works on iPad Safari (WebCodecs H.264); where the browser can't encode video,
       the MP4 option is disabled with the reason.
 
+### Desktop app (experimental)
+
+On Windows with a Surface/MPP pen, using the CI build or `npm run desktop`. Then the same on the
+macOS and Linux builds.
+
+- [ ] First launch creates the library at `Documents\DrawThing` (Actions → Library shows the
+      path).
+- [ ] Draw, then end the process mid-stroke from Task Manager. On relaunch the artwork reopens,
+      at most one autosave behind, and the artwork folder has no `journal.bin` left.
+- [ ] Change location → an empty folder → Move. The app reloads with the gallery, brushes and
+      palettes intact, and the old folder is gone.
+- [ ] Change location → a folder with another library → Switch. It shows that library, and the
+      first one is untouched. Switch back.
+- [ ] Change location → Documents: it offers `Documents\DrawThing` (or says it's already there).
+- [ ] Brushes, palettes and preferences follow the library, not the machine.
+- [ ] Export (PNG, PSD, GIF, MP4, `.drawthing`) opens the Save dialog in the library's `Exports`
+      folder, and Cancel does nothing.
+- [ ] Double-clicking a `.drawthing` file opens it, both when the app is closed and while it's
+      running (the window comes forward).
+- [ ] Pen pressure, tilt, eraser end, palm rejection and gestures behave as in Edge.
+- [ ] Unplug the drive the library is on and relaunch. It starts with the default library and
+      says the chosen one couldn't be opened.
+
 ## Results log
 
 Add a row per device, browser and build. Paste the lab's saved report next to it if you like.

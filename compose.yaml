@@ -4,6 +4,7 @@
 #   ./scripts/dnpm run check                                any npm command, in the dev image
 #   docker compose --env-file deploy/env/local.env up -d app   deploy (local / lan / cloud env file)
 #   ./scripts/e2e                                           Playwright end-to-end tests
+#   ./scripts/dcargo test                                   desktop app's Rust tests
 #
 # See README.md for the LAN and cloud setups.
 name: drawthing
@@ -64,7 +65,22 @@ services:
       # Reference images of the visual regression suite, written by --update-snapshots.
       - ./e2e/snapshots:/app/e2e/snapshots
 
+  desktop:
+    profiles: [desktop]
+    build:
+      context: .
+      target: desktop
+    image: drawthing-desktop
+    init: true
+    working_dir: /app/src-tauri
+    volumes:
+      - .:/app
+      - desktop_node_modules:/app/node_modules
+      - cargo_home:/home/builder/.cargo
+
 volumes:
   node_modules:
+  desktop_node_modules:
+  cargo_home:
   caddy_data:
   caddy_config:

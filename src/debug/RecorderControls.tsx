@@ -30,7 +30,7 @@ export function RecorderControls({ engine, onNotice }: Props) {
     if (!e) return;
     const p = currentPlatform();
     e.startRecording(
-      `${OS_LABEL[p.os]} · ${p.standalone ? 'installed' : 'tab'} · ${navigator.userAgent}`,
+      `${OS_LABEL[p.os]} · ${p.desktop ? 'desktop' : p.standalone ? 'installed' : 'tab'} · ${navigator.userAgent}`,
     );
     setCount(0);
   };

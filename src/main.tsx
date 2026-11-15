@@ -12,7 +12,10 @@ import './styles/global.css';
 const flags = readDebugFlags(location.search);
 if (flags.remoteLog) installRemoteLog();
 observeLongTasks();
-startPwa();
+// The desktop app reads its settings before the first render; the web app registers its
+// service worker. The desktop module is compiled out of the web build.
+if (__DESKTOP__) await import('./platform/desktop').then((m) => m.startDesktop());
+else startPwa();
 
 const root = document.getElementById('root');
 if (!root) throw new Error('#root missing from index.html');
